@@ -1,0 +1,86 @@
+   Compiling ggpk-explorer v0.1.0 (S:\_projects_\_poe2_\ggpk-explorer)
+warning: unused import: `FileInfo`
+ --> src\ui\app.rs:4:51
+  |
+4 | use crate::bundles::index::{Index as BundleIndex, FileInfo};
+  |                                                   ^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `TreeViewAction`
+ --> src\ui\app.rs:6:38
+  |
+6 | use crate::ui::tree_view::{TreeView, TreeViewAction, BundleNode};
+  |                                      ^^^^^^^^^^^^^^
+
+error[E0599]: no function or associated item named `new` found for struct `ContentView` in the current scope
+  --> src\ui\app.rs:36:40
+   |
+36 |             content_view: ContentView::new(),
+   |                                        ^^^ function or associated item not found in `ContentView`
+   |
+  ::: src\ui\content_view.rs:13:1
+   |
+13 | pub struct ContentView {
+   | ---------------------- function or associated item `new` not found for this struct
+   |
+   = help: items from traits can only be used if the trait is implemented and in scope
+   = note: the following traits define an item `new`, perhaps you need to implement one of them:
+           candidate #1: `HashMapExt`
+           candidate #2: `HashSetExt`
+           candidate #3: `aligned_vec::Alignment`
+           candidate #4: `itertools::adaptors::coalesce::CountItem`
+           candidate #5: `parking_lot_core::thread_parker::ThreadParkerT`
+           candidate #6: `ring::aead::BoundKey`
+           candidate #7: `symphonia_core::meta::MetadataReader`
+
+error[E0599]: no function or associated item named `read_from_slice` found for struct `index::Index` in the current scope
+   --> src\ui\app.rs:137:79
+    |
+137 | ...                   let idx = crate::bundles::index::Index::read_from_slice(data);
+    |                                                               ^^^^^^^^^^^^^^^ function or associated item not found in `index::Index`
+    |
+   ::: src\bundles\index.rs:30:1
+    |
+ 30 | pub struct Index {
+    | ---------------- function or associated item `read_from_slice` not found for this struct
+    |
+note: if you're trying to build a new `index::Index` consider using one of the following associated functions:
+      index::Index::read
+      index::Index::load_from_cache
+   --> src\bundles\index.rs:36:5
+    |
+ 36 |     pub fn read(data: &[u8]) -> io::Result<Self> {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+112 |     pub fn load_from_cache<P: AsRef<std::path::Path>>(path: P) -> std::io::Result<Self> {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0061]: this method takes 6 arguments but 5 arguments were supplied
+   --> src\ui\tree_view.rs:198:50
+    |
+198 | ...                   self.render_directory(ui, reader, entry.offset, &sub_dir.name, selected_file);
+    |                            ^^^^^^^^^^^^^^^^-------------------------------------------------------- argument #6 of type `std::option::Option<&HashSet<std::string::String>>` is missing
+    |
+note: method defined here
+   --> src\ui\tree_view.rs:148:8
+    |
+148 | ...fn render_directory(&self, ui: &mut egui::Ui, reader: &GgpkReader, offset: u64, name: &str, selected_file: &mut Option<crate::ui::app::FileSelection>, known_tables: Option<&std::collections::HashSet<String>>) {
+    |       ^^^^^^^^^^^^^^^^                                                                                                                                    --------------------------------------------------------
+help: provide the argument
+    |
+198 |                                             self.render_directory(ui, reader, entry.offset, &sub_dir.name, selected_file, /* std::option::Option<&HashSet<std::string::String>> */);
+    |                                                                                                                         ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+warning: unused variable: `ctx`
+  --> src\ui\app.rs:76:29
+   |
+76 |     fn open_ggpk(&mut self, ctx: &egui::Context) {
+   |                             ^^^ help: if this is intentional, prefix it with an underscore: `_ctx`
+   |
+   = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+Some errors have detailed explanations: E0061, E0599.
+For more information about an error, try `rustc --explain E0061`.
+warning: `ggpk-explorer` (bin "ggpk-explorer") generated 3 warnings
+error: could not compile `ggpk-explorer` (bin "ggpk-explorer") due to 3 previous errors; 3 warnings emitted
