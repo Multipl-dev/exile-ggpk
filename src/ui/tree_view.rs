@@ -1,16 +1,17 @@
-use std::rc::Rc;
+use std::sync::Arc;
 use eframe::egui;
 use crate::bundles::index::Index;
 use crate::ggpk::reader::GgpkReader;
+use std::collections::HashMap;
 
 pub struct TreeView {
-    reader: Option<Rc<GgpkReader>>,
+    reader: Option<Arc<GgpkReader>>,
     bundle_root: Option<BundleNode>,
 }
 
 struct BundleNode {
     name: String,
-    children: std::collections::BTreeMap<String, BundleNode>,
+    children: HashMap<String, BundleNode>,
     file_hash: Option<u64>,
 }
 
@@ -27,22 +28,22 @@ pub enum TreeViewAction {
 }
 
 impl TreeView {
-    pub fn new(reader: std::rc::Rc<GgpkReader>) -> Self {
+    pub fn new(reader: Arc<GgpkReader>) -> Self {
         Self { reader: Some(reader), bundle_root: None }
     }
 
-    pub fn new_bundled(reader: std::rc::Rc<GgpkReader>, index: &Index) -> Self {
+    pub fn new_bundled(reader: Arc<GgpkReader>, index: &Index) -> Self {
         let root = Self::build_bundle_tree(index);
         Self { reader: Some(reader), bundle_root: Some(root) }
     }
 
     fn build_bundle_tree(index: &Index) -> BundleNode {
         let mut root = BundleNode {
-            name: "Root".to_string(),
-            children: std::collections::BTreeMap::new(),
+            name: "Bundles".to_string(),
+            children: HashMap::new(),
             file_hash: None,
         };
-
+        
         for (hash, file) in &index.files {
             if file.path.is_empty() { continue; }
             
@@ -54,14 +55,14 @@ impl TreeView {
                     // File
                     current.children.insert(part.to_string(), BundleNode {
                         name: part.to_string(),
-                        children: std::collections::BTreeMap::new(),
+                        children: HashMap::new(),
                         file_hash: Some(*hash),
                     });
                 } else {
                     // Directory
                     current = current.children.entry(part.to_string()).or_insert_with(|| BundleNode {
                         name: part.to_string(),
-                        children: std::collections::BTreeMap::new(),
+                        children: HashMap::new(),
                         file_hash: None,
                     });
                 }
@@ -70,22 +71,39 @@ impl TreeView {
         root
     }
     
-    pub fn show(&mut self, ui: &mut egui::Ui, selected_file: &mut Option<crate::ui::app::FileSelection>) -> TreeViewAction {
+    pub fn show(&mut self, ui: &mut egui::Ui, selected_file: &mut Option<crate::ui::app::FileSelection>, schema: Option<&crate::dat::schema::Schema>) -> TreeViewAction {
         let mut action = TreeViewAction::None;
         
         if let Some(root) = &self.bundle_root {
-            self.render_bundle_node(ui, root, selected_file, &mut action);
+            self.render_bundle_node(ui, root, selected_file, &mut action, schema);
         } else if let Some(reader) = &self.reader {
             let root_offset = reader.root_offset;
-            self.render_directory(ui, reader, root_offset, "Root", selected_file);
+            self.render_directory(ui, reader, root_offset, "Root", selected_file, schema);
         }
         
         action
     }
 
-    fn render_bundle_node(&self, ui: &mut egui::Ui, node: &BundleNode, selected_file: &mut Option<crate::ui::app::FileSelection>, action: &mut TreeViewAction) {
+    fn render_bundle_node(&self, ui: &mut egui::Ui, node: &BundleNode, selected_file: &mut Option<crate::ui::app::FileSelection>, action: &mut TreeViewAction, schema: Option<&crate::dat::schema::Schema>) {
         if let Some(hash) = node.file_hash {
-            if ui.button(&node.name).clicked() {
+            let mut label = egui::RichText::new(&node.name);
+            
+            // Check schema if .dat file
+            if node.name.ends_with(".dat") || node.name.ends_with(".datc64") || node.name.ends_with(".datl") || node.name.ends_with(".datl64") {
+                if let Some(s) = schema {
+                    // Assuming node.name is filename like "Stats.dat"
+                    let stem = std::path::Path::new(&node.name).file_stem().and_then(|s| s.to_str());
+                    if let Some(stem) = stem {
+                         if !s.tables.iter().any(|t| t.name.eq_ignore_ascii_case(stem)) {
+                             label = label.color(egui::Color32::RED);
+                         }
+                    } else {
+                         label = label.color(egui::Color32::RED);
+                    }
+                }
+            }
+
+            if ui.button(label).clicked() {
                  *selected_file = Some(crate::ui::app::FileSelection::BundleFile(hash));
                  *action = TreeViewAction::Select(crate::ui::app::FileSelection::BundleFile(hash));
             }
@@ -107,7 +125,7 @@ impl TreeView {
                     });
 
                     for child in children {
-                        self.render_bundle_node(ui, child, selected_file, action);
+                        self.render_bundle_node(ui, child, selected_file, action, schema);
                     }
                 });
                 
@@ -131,7 +149,7 @@ impl TreeView {
         }
     }
 
-    fn render_directory(&self, ui: &mut egui::Ui, reader: &GgpkReader, offset: u64, name: &str, selected_file: &mut Option<crate::ui::app::FileSelection>) {
+    fn render_directory(&self, ui: &mut egui::Ui, reader: &GgpkReader, offset: u64, name: &str, selected_file: &mut Option<crate::ui::app::FileSelection>, schema: Option<&crate::dat::schema::Schema>) {
         let id = ui.make_persistent_id(offset);
         egui::CollapsingHeader::new(name)
             .id_salt(id)
@@ -181,7 +199,7 @@ impl TreeView {
                                 RecordTag::PDIR => {
                                     match reader.read_directory(entry.offset) {
                                         Ok(sub_dir) => {
-                                            self.render_directory(ui, reader, entry.offset, &sub_dir.name, selected_file);
+                                            self.render_directory(ui, reader, entry.offset, &sub_dir.name, selected_file, schema);
                                         },
                                         Err(_) => { ui.label("<Read Error>"); }
                                     }
@@ -189,7 +207,22 @@ impl TreeView {
                                 RecordTag::FILE => {
                                      match reader.read_file_record(entry.offset) {
                                          Ok(file) => {
-                                             if ui.button(&file.name).clicked() {
+                                             let mut label = egui::RichText::new(&file.name);
+                                             // Schema Check
+                                             if file.name.ends_with(".dat") || file.name.ends_with(".datc64") || file.name.ends_with(".datl") || file.name.ends_with(".datl64") {
+                                                 if let Some(s) = schema {
+                                                     let stem = std::path::Path::new(&file.name).file_stem().and_then(|s| s.to_str());
+                                                     if let Some(stem) = stem {
+                                                          if !s.tables.iter().any(|t| t.name.eq_ignore_ascii_case(stem)) {
+                                                              label = label.color(egui::Color32::RED);
+                                                          }
+                                                     } else {
+                                                          label = label.color(egui::Color32::RED);
+                                                     }
+                                                 }
+                                             }
+
+                                             if ui.button(label).clicked() {
                                                  *selected_file = Some(crate::ui::app::FileSelection::GgpkOffset(entry.offset));
                                              }
                                          },
@@ -200,8 +233,26 @@ impl TreeView {
                             }
                         }
                     },
-                    Err(_) => {
-                        ui.label("<Read Error>");
+                    Err(e) => {
+                         // Different error handling in original? "Err(_) => {" vs "Err(e) => {"
+                         // Original line 220: "Err(_) => {"
+                         // NO, I read "Err(_) => { ui.label... }" at line 220. 
+                         // Check line 220 in viewed file 1293.
+                         // Line 220: "Err(_) => {"
+                         // Wait, I am replacing lines 151 to 214?
+                         // Line 214 corresponds to `Err(_) => { ui.label("<Read Error>"); }` inside FILE match.
+                         // Line 220 is the error arm for `read_directory`.
+                         // I am NOT replacing line 220.
+                         // My replacement content ends with closing brace for FILE match `}`.
+                         // And then `_ => {}` and `}` loop end. 
+                         // My replacement content is FULL function body?
+                         // No, my replacement starts at line 151 (function signature).
+                         // Ends at line 214?
+                         // Wait, `read_directory` has nested match.
+                         // The structure is large.
+                         // I should replace the WHOLE function.
+                         // I need to see where the function ends.
+                         ui.label(format!("Error reading directory: {}", e));
                     }
                 }
             });

@@ -3,7 +3,7 @@ use crate::ggpk::reader::GgpkReader;
 use crate::ui::tree_view::TreeView;
 use crate::ui::content_view::ContentView;
 use rfd::FileDialog;
-use std::rc::Rc;
+use std::sync::Arc;
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum FileSelection {
@@ -16,7 +16,7 @@ use std::sync::mpsc::{channel, Receiver};
 use std::thread;
 
 pub struct ExplorerApp {
-    reader: Option<Rc<GgpkReader>>,
+    reader: Option<Arc<GgpkReader>>,
     tree_view: TreeView,
     pub content_view: ContentView,
     pub status_msg: String,
@@ -25,7 +25,7 @@ pub struct ExplorerApp {
     pub bundle_index: Option<crate::bundles::index::Index>,
     
     // Async loading
-    load_rx: Option<Receiver<Result<(GgpkReader, Option<crate::bundles::index::Index>, bool, PathBuf, String), String>>>,
+    load_rx: Option<Receiver<Result<(Arc<GgpkReader>, Option<crate::bundles::index::Index>, bool, PathBuf, String, TreeView), String>>>,
     is_loading: bool,
 
     pub settings: crate::settings::AppSettings,
@@ -104,11 +104,13 @@ impl ExplorerApp {
             
             thread::spawn(move || {
                 let start_total = std::time::Instant::now();
-                let result = (|| -> Result<(GgpkReader, Option<crate::bundles::index::Index>, bool, PathBuf, String), String> {
+                let result = (|| -> Result<(Arc<GgpkReader>, Option<crate::bundles::index::Index>, bool, PathBuf, String, TreeView), String> {
                     let start_open = std::time::Instant::now();
-                    let reader = GgpkReader::open(&path_clone)
+                    let reader_inner = GgpkReader::open(&path_clone)
                         .map_err(|e| format!("Failed to open GGPK: {}", e))?;
                     println!("GgpkReader::open took {:?}", start_open.elapsed());
+                    
+                    let reader = Arc::new(reader_inner);
                     
                     let mut bundle_index = None;
                     let mut extra_status = String::new();
@@ -175,9 +177,18 @@ impl ExplorerApp {
                     }
                     
                     let is_poe2 = reader.version >= 4 || found_bundle_index;
+                    
+                    let start_tree = std::time::Instant::now();
+                    let tree_view = if let Some(idx) = &bundle_index {
+                        TreeView::new_bundled(reader.clone(), idx)
+                    } else {
+                        TreeView::new(reader.clone())
+                    };
+                    println!("TreeView creation took {:?}", start_tree.elapsed());
+                    
                     println!("Total Loading Thread took {:?}", start_total.elapsed());
                     
-                    Ok((reader, bundle_index, is_poe2, path_clone, extra_status))
+                    Ok((reader, bundle_index, is_poe2, path_clone, extra_status, tree_view))
                 })();
                 
                 let _ = tx.send(result);
@@ -198,19 +209,12 @@ impl eframe::App for ExplorerApp {
                          self.load_rx = None;
                          
                          match result {
-                             Ok((reader, index, is_poe2, path, extra_status)) => {
-                                 let reader = Rc::new(reader);
+                             Ok((reader, index, is_poe2, path, extra_status, tree_view)) => {
+                                 // Update state with result
                                  self.reader = Some(reader.clone());
                                  self.bundle_index = index;
                                  self.is_poe2 = is_poe2;
-                                 
-                                 let start_tree = std::time::Instant::now();
-                                 if let Some(idx) = &self.bundle_index {
-                                     self.tree_view = TreeView::new_bundled(reader.clone(), idx);
-                                 } else {
-                                     self.tree_view = TreeView::new(reader.clone());
-                                 }
-                                 println!("TreeView::new_bundled took {:?}", start_tree.elapsed());
+                                 self.tree_view = tree_view;
                                  
                                  let version = reader.version;
                                  let game_ver = if self.is_poe2 { "Target: PoE 2" } else { "Target: PoE 1" };
@@ -308,7 +312,7 @@ impl eframe::App for ExplorerApp {
              if self.reader.is_some() {
                  ui.push_id("tree_scroll", |ui| {
                     egui::ScrollArea::both().auto_shrink([false, false]).show(ui, |ui| {
-                 let action = self.tree_view.show(ui, &mut self.selected_file);
+                 let action = self.tree_view.show(ui, &mut self.selected_file, self.content_view.dat_viewer.schema.as_ref());
                  match action {
                      crate::ui::tree_view::TreeViewAction::None => {},
                      crate::ui::tree_view::TreeViewAction::Select(_) => {}, // Handled by mut ref
@@ -421,9 +425,10 @@ impl eframe::App for ExplorerApp {
              } else {
                  ui.centered_and_justified(|ui| {
                      if self.is_loading {
-                         ui.heading("Loading GGPK...");
-                         ui.spinner();
-                         ui.label("Please wait while the file index is built.");
+                         // Removed redundant spinner as footer has one.
+                         // Just show nothing or a subtle text?
+                         // User said "No need to be showing Loading GGPK... since we also have it in the footer area"
+                         // I'll show nothing to keep it clean, or maybe the logo?
                      } else {
                          ui.label("Open a Content.ggpk file to begin.");
                      }
