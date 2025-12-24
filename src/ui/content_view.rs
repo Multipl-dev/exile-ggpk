@@ -7,7 +7,7 @@ use crate::ggpk::reader::GgpkReader;
 // The warning said `unused import`.
 // Maybe it's available via GgpkReader preamble or just not needed if I don't name the type?
 use std::collections::HashMap;
-use std::path::Path;
+
 use crate::ui::dat_viewer::DatViewer;
 
 pub struct ContentView {
@@ -22,6 +22,8 @@ pub struct ContentView {
     pub last_error: Option<String>,
     pub failed_loads: std::collections::HashSet<u64>,
     pub zoom_level: f32,
+    pub bundle_path_cache: std::collections::HashMap<String, String>, // Deprecated, kept for now to avoid breaking other fields matching
+    pub cdn_loader: Option<crate::bundles::cdn::CdnBundleLoader>,
 }
 
 impl Default for ContentView {
@@ -35,6 +37,8 @@ impl Default for ContentView {
             last_error: None,
             failed_loads: std::collections::HashSet::new(),
             zoom_level: 1.0,
+            bundle_path_cache: std::collections::HashMap::new(),
+            cdn_loader: None,
         }
     }
 }
@@ -43,6 +47,16 @@ use crate::ui::app::FileSelection;
 use crate::bundles::index::Index;
 
 impl ContentView {
+    pub fn set_cdn_loader(&mut self, loader: crate::bundles::cdn::CdnBundleLoader) {
+        self.cdn_loader = Some(loader);
+    }
+
+    pub fn update_cdn_version(&mut self, ver: &str) {
+        if let Some(loader) = &mut self.cdn_loader {
+            loader.set_patch_version(ver);
+        }
+    }
+    
     pub fn set_dat_schema(&mut self, schema: crate::dat::schema::Schema, created_at: String) {
         self.dat_viewer.set_schema(schema, created_at);
     }
@@ -294,9 +308,9 @@ impl ContentView {
          self.last_error = None;
 
          if let Some(bundle_info) = index.bundles.get(file_info.bundle_index as usize) {
-             let mut found_record = None;
-             let mut found_path = String::new();
+             let mut raw_bundle_data: Option<Vec<u8>> = None;
              
+             // 1. Try Local GGPK
              // Candidate paths to try
              let candidates = vec![
                  format!("Bundles2/{}", bundle_info.name),
@@ -306,114 +320,54 @@ impl ContentView {
              ];
 
              for cand in &candidates {
-                 println!("Attempting to load bundle: {}", cand);
+                 // println!("Attempting to load bundle from GGPK: {}", cand);
                  if let Ok(Some(rec)) = reader.read_file_by_path(cand) {
-                     found_record = Some(rec);
-                     found_path = cand.clone();
-                     break;
+                     println!("Bundle found in GGPK: {}", cand);
+                     if let Ok(data) = reader.get_data_slice(rec.data_offset, rec.data_length) {
+                         raw_bundle_data = Some(data.to_vec());
+                         break;
+                     }
                  }
              }
 
-             // Fallback: Directory Scanning
-             if found_record.is_none() {
-                 println!("Direct lookup failed. attempting directory scan...");
-                 // Try scanning based on Bundles2 prefix first, then root
-                 let scan_bases = vec![
-                     format!("Bundles2/{}", bundle_info.name),
-                     bundle_info.name.clone(),
-                 ];
-                 
-                 for base in scan_bases {
-                     let path_obj = std::path::Path::new(&base);
-                     if let Some(parent) = path_obj.parent() {
-                         let parent_str = parent.to_string_lossy().replace("\\", "/");
-                         println!("Scanning parent directory: {}", parent_str);
-                         
-                         match reader.list_files_in_directory(&parent_str) {
-                             Ok(files) => {
-                                  let stem = path_obj.file_stem().map(|s| s.to_string_lossy()).unwrap_or_default();
-                                  for f_raw in files {
-                                      let f = f_raw.replace("FILE:", "").replace("DIR:", "");
-                                      if f.to_lowercase().contains(&stem.to_lowercase()) {
-                                           println!("Found potential candidate: {}", f);
-                                           let candidate_path = format!("{}/{}", parent_str, f);
-                                           if let Ok(Some(rec)) = reader.read_file_by_path(&candidate_path) {
-                                               found_record = Some(rec);
-                                               found_path = candidate_path;
-                                               break;
-                                           }
-                                      }
-                                  }
-                             },
-                             Err(e) => {
-                                 println!("Scan failed for {}: {}", parent_str, e);
-                             }
+             // 2. Try CDN Fallback
+             if raw_bundle_data.is_none() {
+                 if let Some(cdn) = &self.cdn_loader {
+                     // PoE2 CDN expects .bundle.bin suffix usually
+                     let fetch_name = if bundle_info.name.ends_with(".bundle.bin") {
+                         bundle_info.name.clone()
+                     } else {
+                         format!("{}.bundle.bin", bundle_info.name)
+                     };
+                     
+                     println!("Bundle missing from GGPK. Attempting CDN fetch for: {}", fetch_name);
+                     match cdn.fetch_bundle(&fetch_name) {
+                         Ok(data) => {
+                             println!("Bundle fetched from CDN. Size: {}", data.len());
+                             raw_bundle_data = Some(data);
+                         },
+                         Err(e) => {
+                             let msg = format!("CDN Fetch Failed: {}", e);
+                             println!("{}", msg);
+                             self.last_error = Some(msg);
                          }
                      }
-                     if found_record.is_some() { break; }
-                 }
-             }
-
-             if found_record.is_none() {
-                 println!("FATAL: Bundle not found for hash {}.", hash);
-                 self.failed_loads.insert(hash);
-                 self.last_error = Some("Bundle not found".to_string());
-
-                 // Debug Listing & Hashed Bucket Scan
-                 println!("DEBUG PROBE: Listing 'Bundles2/Folders'...");
-                 if let Ok(entries) = reader.list_files_in_directory("Bundles2/Folders") {
-                      println!("DEBUG: Bundles2/Folders contents: {:?}", entries);
-                      
-                      // DEEP SCAN: Check inside the first level subdirectories (hashed buckets?)
-                      println!("DEBUG PROBE: Starting Deep Scan of Bundles2/Folders subdirectories...");
-                      let bundle_stem = Path::new(&bundle_info.name).file_stem().unwrap_or_default().to_string_lossy();
-                      let target_name = bundle_stem.to_string();
-                      
-                      for entry in entries {
-                          if let Some(dir_name) = entry.strip_prefix("DIR:") {
-                              let subdir_path = format!("Bundles2/Folders/{}", dir_name);
-                              if let Ok(sub_entries) = reader.list_files_in_directory(&subdir_path) {
-                                  for sub_entry in sub_entries {
-                                      if let Some(file_name) = sub_entry.strip_prefix("FILE:") {
-                                          if file_name.to_lowercase().contains(&target_name.to_lowercase()) {
-                                              println!("DEEP SCAN: Found candidate in {}: {}", dir_name, file_name);
-                                              
-                                              let candidate_path = format!("{}/{}", subdir_path, file_name);
-                                              if let Ok(Some(rec)) = reader.read_file_by_path(&candidate_path) {
-                                                  println!("DEEP SCAN: Read successful! Using this path.");
-                                                  found_record = Some(rec);
-                                                  found_path = candidate_path;
-                                                  
-                                                  // Important: Clear the failure since we found it
-                                                  self.failed_loads.remove(&hash);
-                                                  self.last_error = None;
-                                                  break;
-                                              }
-                                          }
-                                      }
-                                  }
-                              }
-                          }
-                          if found_record.is_some() { break; }
-                      }
                  } else {
-                      println!("DEBUG: Failed to list 'Bundles2/Folders'");
+                     let msg = format!("Bundle not found in GGPK and CDN Loader not initialized. Hash: {}", hash);
+                     println!("{}", msg);
+                     self.last_error = Some(msg);
                  }
              }
-             
-             if let Some(file_record) = found_record {
+
+             if let Some(data) = raw_bundle_data {
                  self.failed_loads.remove(&hash);
-                 println!("Bundle found: {}", found_path);
-                 println!("Found bundle file record. Offset: {}, Size: {}", file_record.data_offset, file_record.data_length);
-                 if let Ok(data) = reader.get_data_slice(file_record.data_offset, file_record.data_length) {
-                     println!("Read bundle data slice. Size: {}", data.len());
-                     let mut cursor = std::io::Cursor::new(data);
-                     match crate::bundles::bundle::Bundle::read_header(&mut cursor) {
-                        Ok(bundle) => {
-                             println!("Bundle header read success. Uncompressed Size: {}", bundle.uncompressed_size);
-                             match bundle.decompress(&mut cursor) {
-                                Ok(decompressed_data) => {
-                                     println!("Bundle decompressed success. Size: {}", decompressed_data.len());
+                 let mut cursor = std::io::Cursor::new(data);
+                 match crate::bundles::bundle::Bundle::read_header(&mut cursor) {
+                    Ok(bundle) => {
+                         println!("Bundle header read success. Uncompressed Size: {}", bundle.uncompressed_size);
+                         match bundle.decompress(&mut cursor) {
+                            Ok(decompressed_data) => {
+                                 println!("Bundle decompressed success. Size: {}", decompressed_data.len());
                                      let start = file_info.file_offset as usize;
                                      let end = start + file_info.file_size as usize;
                              
@@ -554,7 +508,6 @@ impl ContentView {
                          self.failed_loads.insert(hash);
                      }
                   }
-                  }
               }
           }
      }
@@ -611,3 +564,12 @@ impl ContentView {
           }
     }
 }
+
+
+
+
+
+
+
+
+

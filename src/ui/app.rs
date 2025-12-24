@@ -14,6 +14,7 @@ pub enum FileSelection {
 use std::path::PathBuf;
 use std::sync::mpsc::{channel, Receiver};
 use std::thread;
+use chrono::TimeZone;
 
 pub struct ExplorerApp {
     reader: Option<Arc<GgpkReader>>,
@@ -26,22 +27,35 @@ pub struct ExplorerApp {
     
     // Async loading
     load_rx: Option<Receiver<Result<(Arc<GgpkReader>, Option<crate::bundles::index::Index>, bool, PathBuf, String, TreeView), String>>>,
+    pub schema_update_rx: Option<Receiver<Result<String, String>>>,
     is_loading: bool,
 
     pub settings: crate::settings::AppSettings,
+    pub settings_window: crate::ui::settings_window::SettingsWindow,
 }
 
 impl ExplorerApp {
     pub fn new(_cc: &eframe::CreationContext<'_>) -> Self {
+        let settings = crate::settings::AppSettings::load();
         let mut content_view = ContentView::default();
         
         // Try to load schema
-        let schema_path = r"s:\_projects_\_poe2_\dat-schema\schema.min.json";
+        // Use setting or default path in app data
+        let app_data_dir = crate::settings::AppSettings::get_app_data_dir();
+        let default_schema_path = app_data_dir.join("schema.min.json");
+        let default_schema_path_str = default_schema_path.to_string_lossy().to_string();
+        
+        let schema_path = settings.schema_local_path.as_deref().unwrap_or(&default_schema_path_str);
+
         if let Ok(data) = std::fs::read(schema_path) {
              if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&data) {
                  let created_at = value.get("createdAt")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string())
+                    .and_then(|v| v.as_i64())
+                    .map(|ts| {
+                         let dt = chrono::DateTime::from_timestamp(ts, 0);
+                         dt.map(|d| d.format("%Y-%m-%d %H:%M:%S UTC").to_string())
+                           .unwrap_or_else(|| "Invalid Timestamp".to_string())
+                    })
                     .unwrap_or_else(|| "Unknown".to_string());
                  
                  if let Ok(s) = serde_json::from_value::<crate::dat::schema::Schema>(value) {
@@ -56,7 +70,18 @@ impl ExplorerApp {
              println!("Failed to read schema.min.json at {}", schema_path);
         }
 
-        let settings = crate::settings::AppSettings::load();
+        // Initialize CDN Loader with configured patch version
+        let patch_ver = settings.poe2_patch_version.as_str();
+        
+        // Use cache dir inside app data
+        let cache_root = app_data_dir.join("cache");
+        if !cache_root.exists() {
+            let _ = std::fs::create_dir_all(&cache_root);
+        }
+        
+        let cdn = crate::bundles::cdn::CdnBundleLoader::new(&cache_root, Some(patch_ver));
+        content_view.set_cdn_loader(cdn);
+
         let mut app = Self {
             reader: None,
             tree_view: TreeView::default(),
@@ -66,8 +91,10 @@ impl ExplorerApp {
             is_poe2: false,
             bundle_index: None,
             load_rx: None,
+            schema_update_rx: None,
             is_loading: false,
             settings,
+            settings_window: crate::ui::settings_window::SettingsWindow::new(),
         };
 
         // Auto-load if path exists
@@ -116,10 +143,12 @@ impl ExplorerApp {
                     let mut extra_status = String::new();
                     let mut found_bundle_index = false;
 
-                    // Try to load from cache first
+                    // 1. Try to load from cache
                     let cache_path = std::path::Path::new("bundles2.cache");
+                    let mut loaded_from_cache = false;
+
                     if cache_path.exists() {
-                         eprintln!("Loading index from cache...");
+                         eprintln!("Found cache file, attempting to load...");
                          let start_cache = std::time::Instant::now();
                          match crate::bundles::index::Index::load_from_cache(cache_path) {
                              Ok(index) => {
@@ -127,17 +156,21 @@ impl ExplorerApp {
                                  bundle_index = Some(index);
                                  extra_status = " (Cached)".to_string();
                                  found_bundle_index = true;
+                                 loaded_from_cache = true;
                                  eprintln!("Index loaded from cache successfully.");
                              },
                              Err(e) => {
                                  eprintln!("Failed to load cache: {}", e);
+                                 // If cache is bad, we will fall through to re-parsing
                              }
                          }
                     }
 
-                    if !found_bundle_index {
+                    // 2. If not cached, parse from Bundles/Index
+                    if !loaded_from_cache {
                         let start_scan = std::time::Instant::now();
-                        // Always try to load bundled index first
+                        eprintln!("Cache missing or invalid. Parsing Bundles2/_.index.bin...");
+                        
                         match reader.read_file_by_path("Bundles2/_.index.bin") {
                             Ok(Some(file_record)) => {
                                 match reader.get_data_slice(file_record.data_offset, file_record.data_length) {
@@ -145,14 +178,20 @@ impl ExplorerApp {
                                         let mut cursor = std::io::Cursor::new(data);
                                         match crate::bundles::bundle::Bundle::read_header(&mut cursor) {
                                             Ok(bundle) => {
+                                                eprintln!("Decompressing Index Bundle ({} bytes)...", bundle.uncompressed_size);
                                                 match bundle.decompress(&mut cursor) {
                                                     Ok(decompressed) => {
+                                                        eprintln!("Parsing Decompressed Index...");
                                                         match crate::bundles::index::Index::read(&decompressed) {
                                                             Ok(index) => {
                                                                 println!("Bundle Index parsing took {:?}", start_scan.elapsed());
+                                                                
                                                                 // Save to cache
+                                                                eprintln!("Saving Index to cache...");
                                                                 if let Err(e) = index.save_to_cache(cache_path) {
                                                                     println!("Failed to save cache: {}", e);
+                                                                } else {
+                                                                    println!("Cache saved successfully.");
                                                                 }
                                                                 
                                                                 bundle_index = Some(index);
@@ -171,7 +210,9 @@ impl ExplorerApp {
                                     Err(e) => extra_status = format!(" (Read Error: {})", e),
                                 }
                             },
-                            Ok(None) => {}, // Not found, normal for PoE 1
+                            Ok(None) => {
+                                eprintln!("Bundles2/_.index.bin not found. This is normal for PoE 1 or un-bundled GGPKs.");
+                            }, 
                             Err(e) => extra_status = format!(" (Find Error: {})", e),
                         }
                     }
@@ -246,9 +287,9 @@ impl eframe::App for ExplorerApp {
                         self.open_ggpk(ui.ctx());
                         ui.close_menu();
                     }
-                    if ui.button("Check for Schema Update").clicked() {
-                        self.content_view.dat_viewer.request_update_schema = true;
-                        ui.close_menu();
+                    if ui.button("Settings").clicked() {
+                         self.settings_window.open();
+                         ui.close_menu();
                     }
                     ui.separator();
                     if ui.button("Quit").clicked() {
@@ -435,71 +476,97 @@ impl eframe::App for ExplorerApp {
                  });
              }
         });
-        if self.content_view.dat_viewer.request_update_schema {
-             self.content_view.dat_viewer.request_update_schema = false;
-             self.status_msg = "Updating Schema...".to_string();
-             self.is_loading = true;
-             
-             // Spawn update thread
-             // For now, synchronous is easier but blocks UI.
-             // Let's do a quick synchronous download/copy since file is small.
-             
-             // Logic:
-             // 1. Try to fetch from https://github.com/poe-tool-dev/dat-schema/releases/latest/download/schema.min.json
-             // 2. Or if repo exists, git pull?
-             
-             let update_result = std::thread::spawn(|| {
-                  let url = "https://github.com/poe-tool-dev/dat-schema/releases/latest/download/schema.min.json";
-                  match reqwest::blocking::get(url) {
-                      Ok(resp) => {
-                          if resp.status().is_success() {
-                              match resp.text() {
-                                  Ok(text) => {
-                                      // Save to local file
-                                      let path = "s:/_projects_/_poe2_/dat-schema/schema.min.json";
-                                      if let Err(e) = std::fs::write(path, &text) {
-                                          return Err(format!("Failed to write schema: {}", e));
-                                      }
-                                      Ok(text)
-                                  },
-                                  Err(e) => Err(format!("Failed to read text: {}", e))
-                              }
-                          } else {
-                              Err(format!("HTTP Error: {}", resp.status()))
-                          }
-                      },
-                      Err(e) => Err(format!("Network Error: {}", e))
-                  }
-             }).join();
-             
-             self.is_loading = false;
-             
-              match update_result {
-                  Ok(Ok(json_text)) => {
-                      // Reload
-                       if let Ok(value) = serde_json::from_str::<serde_json::Value>(&json_text) {
-                           let created_at = value.get("createdAt")
-                                .and_then(|v| v.as_str())
-                                .map(|s| s.to_string())
-                                .unwrap_or_else(|| "Unknown".to_string());
 
-                           if let Ok(schema) = serde_json::from_value(value) {
-                               self.content_view.set_dat_schema(schema, created_at);
-                               self.status_msg = "Schema Updated Successfully".to_string();
-                           } else {
-                               self.status_msg = "Failed to parse new schema structure".to_string();
-                           }
-                       } else {
-                           self.status_msg = "Failed to parse new schema JSON".to_string();
-                       }
-                  },
-                 Ok(Err(e)) => {
-                      self.status_msg = format!("Update Failed: {}", e);
+        // Detect settings changes
+        let old_patch_ver = self.settings.poe2_patch_version.clone();
+        
+        // Pass schema_date to settings
+        let schema_date = self.content_view.dat_viewer.schema_date.clone();
+        self.settings_window.show(ctx, &mut self.settings, Some(&schema_date));
+        
+        if self.settings.poe2_patch_version != old_patch_ver {
+             println!("Patch version changed to: {}", self.settings.poe2_patch_version);
+             self.content_view.update_cdn_version(&self.settings.poe2_patch_version);
+        }
+
+        // Poll Schema Update
+        if let Some(rx) = &self.schema_update_rx {
+             match rx.try_recv() {
+                 Ok(Ok(text)) => {
+                     self.status_msg = "Schema Updated Successfully!".to_string();
+                     self.settings_window.schema_status_msg = Some("Updated!".to_string());
+                     self.is_loading = false;
+                     
+                     // Reload Schema
+                     if let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) {
+                          let created_at = value.get("createdAt")
+                             .and_then(|v| v.as_i64())
+                             .map(|ts| {
+                                 let dt = chrono::DateTime::from_timestamp(ts, 0);
+                                 dt.map(|d| d.format("%Y-%m-%d %H:%M:%S UTC").to_string())
+                                   .unwrap_or_else(|| "Invalid Timestamp".to_string())
+                             })
+                             .unwrap_or_else(|| "Unknown".to_string());
+                          
+                          if let Ok(s) = serde_json::from_value::<crate::dat::schema::Schema>(value) {
+                              self.content_view.set_dat_schema(s, created_at);
+                          } else {
+                              self.status_msg = "Failed to parse new schema structure".to_string();
+                          }
+                      } else {
+                          self.status_msg = "Failed to parse new schema JSON".to_string();
+                      }
+                     
+                     self.schema_update_rx = None;
                  },
-                 Err(_) => {
-                      self.status_msg = "Update Thread Panicked".to_string();
+                 Ok(Err(e)) => {
+                     self.status_msg = format!("Schema Update Failed: {}", e);
+                     self.settings_window.schema_status_msg = Some("Failed".to_string());
+                     self.is_loading = false;
+                     self.schema_update_rx = None;
+                 },
+                 Err(std::sync::mpsc::TryRecvError::Empty) => {},
+                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                     self.status_msg = "Schema Update Thread Died".to_string();
+                     self.is_loading = false;
+                     self.schema_update_rx = None;
                  }
              }
+        }
+
+        if (self.content_view.dat_viewer.request_update_schema || self.settings_window.request_update_schema) && self.schema_update_rx.is_none() {
+             self.content_view.dat_viewer.request_update_schema = false;
+             self.settings_window.request_update_schema = false;
+             
+             self.status_msg = "Updating Schema...".to_string();
+             self.settings_window.schema_status_msg = Some("Updating...".to_string());
+             
+             self.is_loading = true;
+             
+             let app_data_dir = crate::settings::AppSettings::get_app_data_dir();
+             let default_path = app_data_dir.join("schema.min.json");
+             let default_path_str = default_path.to_string_lossy().to_string();
+             
+             let target_path = self.settings.schema_local_path.clone().unwrap_or(default_path_str);
+             
+             let (tx, rx) = channel();
+             self.schema_update_rx = Some(rx);
+
+             std::thread::spawn(move || {
+                  let url = "https://github.com/poe-tool-dev/dat-schema/releases/latest/download/schema.min.json";
+                  let result: Result<String, String> = (|| {
+                      let resp = reqwest::blocking::get(url).map_err(|e| format!("Network Error: {}", e))?;
+                      if !resp.status().is_success() {
+                          return Err(format!("HTTP Error: {}", resp.status()));
+                      }
+                      let text = resp.text().map_err(|e| format!("Failed to read text: {}", e))?;
+                      if let Err(e) = std::fs::write(&target_path, &text) {
+                           return Err(format!("Failed to write schema to {}: {}", target_path, e));
+                      }
+                      Ok(text)
+                  })();
+                  let _ = tx.send(result);
+             });
         }
     }
 }

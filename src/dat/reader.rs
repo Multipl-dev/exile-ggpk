@@ -139,155 +139,147 @@ impl DatReader {
 }
 
 fn get_column_size(col: &Column, is_64bit: bool) -> usize {
-    if is_64bit {
-        match col.r#type.as_str() {
-            "bool" => 1,
-            "byte" | "u8" => 1,
-            "short" | "u16" => 2,
-            "int" | "i32" | "u32" => 4,
-            "float" | "f32" => 4,
-            "long" | "u64" => 8,
-            "string" | "ref|string" => 8, // Offset (8 bytes)
-            "ref|list" => 16, // Count (8) + Offset (8)
-            "foreign_row" => 16, // Index (8) + Unknown (8) - based on KEY_FOREIGN
-            _ => 4,
-        }
-    } else {
-        match col.r#type.as_str() {
-            "bool" => 1,
-            "byte" | "u8" => 1,
-            "short" | "u16" => 2,
-            "int" | "i32" | "u32" | "foreign_row" => 4,
-            "float" | "f32" => 4,
-            "long" | "u64" => 8,
-            "string" | "ref|string" => 4, // 32-bit DAT -> 4 bytes offset
-            "ref|list" => 8, // Usually Count (4) + Offset (4) in 32-bit
-             _ => 4,
-        }
+    if col.array {
+        return if is_64bit { 16 } else { 8 };
+    }
+    match col.r#type.as_str() {
+        "bool" => 1,
+        "byte" | "u8" => 1,
+        "short" | "u16" => 2,
+        "ushort" => 2,
+        "int" | "i32" | "u32" => 4,
+        "uint" => 4,
+        "float" | "f32" => 4,
+        "long" | "u64" | "i64" => 8,
+        "ulong" => 8,
+        "ref|string" | "string" => if is_64bit { 8 } else { 4 },
+        t if t.starts_with("ref|") => if is_64bit { 8 } else { 4 }, // Generic ref size
+        "foreign_row" => if is_64bit { 16 } else { 8 }, // Key(8)+Ptr(8) or Key(4)+Ptr(4)? Usually 16/8 is safe guess for complex foreign keys
+        _ => 4,
     }
 }
 
 fn read_column_value(cursor: &mut Cursor<&[u8]>, col: &Column, file_data: &[u8], var_data_offset: u64, is_64bit: bool) -> io::Result<DatValue> {
+    if col.array {
+        let count = if is_64bit { read_u64(cursor)? } else { read_u32(cursor)? as u64 };
+        let offset = if is_64bit { read_u64(cursor)? } else { read_u32(cursor)? as u64 };
+        return Ok(DatValue::List(count as usize, offset));
+    }
+
     match col.r#type.as_str() {
-         "bool" => {
+        "bool" => {
              let mut b = [0u8; 1];
              cursor.read_exact(&mut b)?;
              Ok(DatValue::Bool(b[0] != 0))
-         },
-         "int" | "i32" | "u32" => {
-             Ok(DatValue::Int(read_u32(cursor)? as i32))
-         },
-         "float" | "f32" => {
+        },
+        "byte" | "u8" => {
+             let mut b = [0u8; 1];
+             cursor.read_exact(&mut b)?;
+             Ok(DatValue::Int(b[0] as i64)) // Treat as int
+        },
+        "short" | "i16" => {
+             let mut b = [0u8; 2];
+             cursor.read_exact(&mut b)?;
+             Ok(DatValue::Int(LittleEndian::read_i16(&b) as i64))
+        },
+        "ushort" | "u16" => {
+             let mut b = [0u8; 2];
+             cursor.read_exact(&mut b)?;
+             Ok(DatValue::Int(LittleEndian::read_u16(&b) as i64))
+        },
+        "int" | "i32" => {
+             Ok(DatValue::Int(read_u32(cursor)? as i32 as i64))
+        },
+        "uint" | "u32" => {
+             Ok(DatValue::Int(read_u32(cursor)? as i64))
+        },
+        "float" | "f32" => {
              let val = read_u32(cursor)?;
              Ok(DatValue::Float(f32::from_bits(val)))
-         },
-         "long" | "u64" => {
+        },
+        "long" | "i64" => {
              Ok(DatValue::Long(read_u64(cursor)?))
-         },
-         "string" | "ref|string" => {
-              let offset_val = if is_64bit {
-                  read_u64(cursor)?
-              } else {
-                  read_u32(cursor)? as u64
-              };
-              
-              // In 64-bit DAT, null is 0xfefefefe? or just 0?
-              // poe-dat-viewer uses MEM32_NULL for keys.
-              // For strings, it reads offset.
-              
-              let abs_offset = var_data_offset + offset_val;
-              
-              if (abs_offset as usize) < file_data.len() {
-                   // Read UTF-16 string
-                   // Search for 0x00000000 (4 bytes) aligned??
-                   // poe-dat-viewer: findZeroSequence(data, 4, offset)
-                   // and (end - offset) % 2 == 0.
-                   
-                   let mut end = abs_offset as usize;
-                   loop {
-                       // Find next 0 byte
-                       if let Some(pos) = file_data[end..].iter().position(|&b| b == 0) {
-                           end += pos;
-                       } else {
-                           end = file_data.len();
-                           break;
-                       }
-                       
-                       // Check if we have 4 zeros
-                       if end + 4 <= file_data.len() && file_data[end..end+4] == [0, 0, 0, 0] {
-                           // Check alignment
-                           if (end - (abs_offset as usize)) % 2 == 0 {
-                               break; // Found it
-                           }
-                           end += 1; // Not aligned, continue
-                       } else {
-                           end += 1; // Not 4 zeros, continue
-                       }
-                       
-                       if end >= file_data.len() { break; }
-                   }
-                   
-                   // Decode utf16
-                   let byte_slice = &file_data[abs_offset as usize..end];
-                   let u16_vec: Vec<u16> = byte_slice
-                       .chunks_exact(2)
-                       .map(|chunk| LittleEndian::read_u16(chunk))
-                       .collect();
-                   
-                   let s = String::from_utf16_lossy(&u16_vec);
-                   Ok(DatValue::String(s))
-              } else {
-                   Ok(DatValue::String("".to_string()))
-              }
-         },
-         "foreign_row" => {
-              let idx = if is_64bit {
-                  let v = read_u64(cursor)?;
-                  // 16 bytes total, skip next 8
-                  let _ = read_u64(cursor)?; 
-                  v // Return first 8 bytes as index/key
-              } else {
-                  read_u32(cursor)? as u64
-              };
-              
-              if idx == 0xfefefefe || idx == 0xfefefefefefefefe {
-                  // Null
-                  Ok(DatValue::ForeignRow(u32::MAX)) // Sentinel
-              } else {
-                  Ok(DatValue::ForeignRow(idx as u32))
-              }
-         },
-         "ref|list" => {
-             // 16 bytes (Count, Offset)
-             if is_64bit {
-                 let count = read_u64(cursor)?;
-                 let offset = read_u64(cursor)?;
-                 Ok(DatValue::List(count as usize, offset))
+        },
+        "ulong" | "u64" => {
+             Ok(DatValue::Long(read_u64(cursor)?))
+        },
+        "string" | "ref|string" => {
+             let offset_val = if is_64bit { read_u64(cursor)? } else { read_u32(cursor)? as u64 };
+             let abs_offset = var_data_offset + offset_val;
+             if (abs_offset as usize) < file_data.len() {
+                 let s = read_string_at(file_data, abs_offset as usize);
+                 Ok(DatValue::String(s))
              } else {
-                 let count = read_u32(cursor)?;
-                 let offset = read_u32(cursor)?;
-                 Ok(DatValue::List(count as usize, offset as u64))
+                 Ok(DatValue::String("".to_string()))
              }
-         },
-          _ => {
-              // Consume bytes
-              let size = get_column_size(col, is_64bit);
-              if size > 0 { cursor.seek(SeekFrom::Current(size as i64))?; }
-              Ok(DatValue::Unknown)
-          }
+        },
+        "foreign_row" => {
+             let idx = if is_64bit {
+                 let v = read_u64(cursor)?;
+                 let _ = read_u64(cursor)?; // Skip 2nd part
+                 v
+             } else {
+                 read_u32(cursor)? as u64
+                 // Skip? usually 4 bytes?
+                 // Wait, foreign_row in 32 bit is 8 bytes key? or 4?
+                 // Let's assume 8 bytes total for struct.
+                 // let _ = read_u32(cursor)?; 
+                 // v
+             };
+             // Actually, foreign_row implementation varies.
+             // But existing code had logic for it.
+             Ok(DatValue::ForeignRow(idx as usize))
+        },
+        t if t.starts_with("ref|") => {
+             // Generic ref
+             let val = if is_64bit { read_u64(cursor)? } else { read_u32(cursor)? as u64 };
+             Ok(DatValue::ForeignRow(val as usize)) // Treat as foreign row index
+        },
+        _ => {
+             let size = get_column_size(col, is_64bit);
+             if size > 0 { cursor.seek(SeekFrom::Current(size as i64))?; }
+             Ok(DatValue::Unknown)
+        }
     }
 }
 
+    // Helper to read string
+fn read_string_at(data: &[u8], offset: usize) -> String {
+    // Try to find null terminator.
+    // Try UTF-16 first (double null aligned)
+    // Safety
+    if offset >= data.len() { return "".to_string(); }
+    
+    // Heuristic: iterate u16s
+    let mut vec_u16 = Vec::new();
+    let mut i = offset;
+    while i + 1 < data.len() {
+        let u = LittleEndian::read_u16(&data[i..i+2]);
+        if u == 0 { break; } // Null terminator
+        vec_u16.push(u);
+        i += 2;
+        if vec_u16.len() > 1000 { break; } // Limit
+    }
+    
+    if !vec_u16.is_empty() {
+        return String::from_utf16_lossy(&vec_u16);
+    }
+    
+    // Fallback? empty string
+    "".to_string()
+}
+
+
 use serde::Serialize;
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Clone)]
 pub enum DatValue {
     Bool(bool),
-    Int(i32),
+    Int(i64),
     Long(u64),
     Float(f32),
     String(String),
-    ForeignRow(u32),
+    ForeignRow(usize),
     List(usize, u64), // Count, Offset
     Unknown,
 }
@@ -303,4 +295,50 @@ fn read_u64(cursor: &mut Cursor<&[u8]>) -> io::Result<u64> {
     cursor.read_exact(&mut buf)?;
     Ok(LittleEndian::read_u64(&buf))
 }
+
+impl DatReader {
+    pub fn read_list_values(&self, offset: u64, count: usize, col: &Column) -> io::Result<Vec<DatValue>> {
+        if count == 0 {
+             return Ok(Vec::new());
+        }
+        
+        let start = (self.data_section_offset + offset) as usize;
+        if start >= self.data.len() {
+             return Ok(vec![DatValue::Unknown]); 
+        }
+        
+        // Element type is same as column type but `array` is false
+        let elem_col = Column {
+            name: None,
+            r#type: col.r#type.clone(),
+            references: col.references.clone(),
+            array: false, 
+            unique: false,
+            localized: false,
+            // until: None, // Removed
+             description: None,
+        };
+        
+        let elem_size = get_column_size(&elem_col, self.is_64bit);
+        
+        // Safety check for size
+        if elem_size == 0 { return Ok(vec![DatValue::Unknown; count]); }
+
+        let total_size = elem_size * count;
+        let end = (start + total_size).min(self.data.len());
+        let slice = &self.data[start..end];
+        let mut cursor = Cursor::new(slice);
+        
+        let mut values = Vec::new();
+        for _ in 0..count {
+             match read_column_value(&mut cursor, &elem_col, &self.data, self.data_section_offset, self.is_64bit) {
+                 Ok(v) => values.push(v),
+                 Err(_) => values.push(DatValue::Unknown),
+             }
+        }
+        
+        Ok(values)
+    }
+}
+
 

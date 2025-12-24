@@ -92,18 +92,22 @@ impl DatViewer {
          
          if let Some(schema) = &self.schema {
              if let Some(reader) = &self.reader {
-                 // Try to match table name from filename
+                 // Match table name (insensitive) and pick best valid_for
                  let path = std::path::Path::new(&reader.filename);
-                 // Assuming filename is something like "data/balance/ActiveSkills.datc64"
-                 // file_stem gives "ActiveSkills"
                  let stem = path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
                  
-                 // Case insensitive match?
-                 let table = schema.tables.iter().find(|t| t.name.eq_ignore_ascii_case(&stem));
+                 let mut candidates: Vec<_> = schema.tables.iter()
+                    .filter(|t| t.name.eq_ignore_ascii_case(&stem))
+                    .collect();
+                 
+                 // Sort by validFor descending (assuming higher version = newer/more specific)
+                 candidates.sort_by(|a, b| b.valid_for.unwrap_or(0).cmp(&a.valid_for.unwrap_or(0)));
+                 
+                 let table = candidates.first().map(|&t| t);
                  
                  if let Some(table) = table {
                  ui.horizontal(|ui| {
-                     ui.label(format!("Table: {}", table.name));
+                     ui.label(format!("Table: {} (ver: {})", table.name, table.valid_for.unwrap_or(0)));
                      if ui.button("Export JSON").clicked() {
                          self.export_json(table);
                      }
@@ -111,62 +115,82 @@ impl DatViewer {
 
                  use egui_extras::{TableBuilder, Column};
                  
-                 TableBuilder::new(ui)
-                    .striped(true)
-                    .resizable(true)
-                    .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-                    .column(Column::initial(60.0).resizable(true)) // Index
-                    .columns(Column::initial(120.0).resizable(true).clip(true), table.columns.len())
-                    .min_scrolled_height(0.0)
-                    .header(20.0, |mut header| {
-                        header.col(|ui| { ui.strong("Index"); });
-                        for col in &table.columns {
-                            header.col(|ui| { ui.strong(col.name.as_deref().unwrap_or("?")); });
-                        }
-                    })
-                    .body(|body| {
-                        if let Some(reader) = &self.reader {
-                             body.rows(20.0, reader.row_count as usize, |mut row| {
-                                 let row_index = row.index();
-                                 row.col(|ui| { ui.label(row_index.to_string()); });
-                                 
-                                 match reader.read_row(row_index as u32, table) {
-                                     Ok(values) => {
-                                         for val in values {
-                                             row.col(|ui| {
-                                                 match val {
-                                                     crate::dat::reader::DatValue::Bool(b) => { ui.label(b.to_string()); },
-                                                     crate::dat::reader::DatValue::Int(i) => { ui.label(i.to_string()); },
-                                                     crate::dat::reader::DatValue::Long(l) => { ui.label(l.to_string()); },
-                                                     crate::dat::reader::DatValue::Float(f) => { ui.label(f.to_string()); },
-                                                     crate::dat::reader::DatValue::String(s) => { 
-                                                         ui.label(&s).on_hover_text(&s); 
-                                                     },
-                                                     crate::dat::reader::DatValue::ForeignRow(idx) => { 
-                                                         if ui.link(format!("Row {}", idx)).clicked() {
-                                                             // TODO: Navigate
-                                                         }
-                                                     },
-                                                     crate::dat::reader::DatValue::List(count, _) => {
-                                                         ui.label(format!("List({})", count));
-                                                     },
-                                                     crate::dat::reader::DatValue::Unknown => { 
-                                                         ui.label("?"); 
-                                                     },
-
-                                                 }
-                                             });
+                 egui::ScrollArea::horizontal().show(ui, |ui| {
+                     TableBuilder::new(ui)
+                         .striped(true)
+                         .resizable(true)
+                         .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                         .column(Column::initial(60.0).resizable(true)) // Index
+                         .columns(Column::initial(150.0).resizable(true).clip(true), table.columns.len())
+                         .min_scrolled_height(0.0)
+                         .header(20.0, |mut header| {
+                             header.col(|ui| { ui.strong("Index"); });
+                             for col in &table.columns {
+                                 let name = col.name.as_deref().unwrap_or("?");
+                                 header.col(|ui| { ui.strong(name).on_hover_text(format!("Type: {}\nArray: {}", col.r#type, col.array)); });
+                             }
+                         })
+                         .body(|body| {
+                             if let Some(reader) = &self.reader {
+                                 body.rows(20.0, reader.row_count as usize, |mut row| {
+                                     let row_index = row.index();
+                                     row.col(|ui| { ui.label(row_index.to_string()); });
+                                     
+                                     match reader.read_row(row_index as u32, table) {
+                                         Ok(values) => {
+                                             for (col_idx, val) in values.iter().enumerate() {
+                                                 row.col(|ui| {
+                                                     match val {
+                                                         crate::dat::reader::DatValue::Bool(b) => { ui.label(b.to_string()); },
+                                                         crate::dat::reader::DatValue::Int(i) => { ui.label(i.to_string()); },
+                                                         crate::dat::reader::DatValue::Long(l) => { ui.label(l.to_string()); },
+                                                         crate::dat::reader::DatValue::Float(f) => { ui.label(f.to_string()); },
+                                                         crate::dat::reader::DatValue::String(s) => { 
+                                                             ui.label(s).on_hover_text(s); 
+                                                         },
+                                                         crate::dat::reader::DatValue::ForeignRow(idx) => { 
+                                                             if ui.link(format!("Row {}", idx)).clicked() {
+                                                                 // TODO: Navigate
+                                                             }
+                                                         },
+                                                         crate::dat::reader::DatValue::List(count, offset) => {
+                                                             if *count > 0 {
+                                                                 ui.menu_button(format!("List({})", count), |ui| {
+                                                                      ui.set_max_height(200.0);
+                                                                      egui::ScrollArea::vertical().show(ui, |ui| {
+                                                                          let col_def = &table.columns[col_idx];
+                                                                          match reader.read_list_values(*offset, *count, col_def) {
+                                                                              Ok(items) => {
+                                                                                  for (i, item) in items.iter().enumerate() {
+                                                                                      ui.label(format!("{}: {:?}", i, item));
+                                                                                  }
+                                                                              },
+                                                                              Err(e) => { ui.colored_label(egui::Color32::RED, format!("Error: {}", e)); }
+                                                                          }
+                                                                      });
+                                                                 });
+                                                             } else {
+                                                                 ui.label("[]");
+                                                             }
+                                                         },
+                                                         crate::dat::reader::DatValue::Unknown => { 
+                                                             ui.label("?"); 
+                                                         },
+    
+                                                     }
+                                                 });
+                                             }
+                                         },
+                                         Err(_) => {
+                                              for _ in 0..table.columns.len() {
+                                                  row.col(|ui| { ui.label("ERR"); });
+                                              }
                                          }
-                                     },
-                                     Err(_) => {
-                                          for _ in 0..table.columns.len() {
-                                              row.col(|ui| { ui.label("ERR"); });
-                                          }
                                      }
-                                 }
-                             });
-                        }
-                    });
+                                 });
+                             }
+                         });
+                 });
                  } else {
                      ui.label(format!("Table not found for file: {}", reader.filename));
                      self.show_generic_view(ui, reader);

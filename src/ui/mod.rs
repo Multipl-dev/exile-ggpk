@@ -3,6 +3,7 @@ pub mod tree_view; // pub needed for actions
 mod content_view;
 mod dat_viewer;
 pub mod hex_viewer;
+pub mod settings_window;
 
 pub fn run() -> eframe::Result<()> {
     let options = eframe::NativeOptions {

@@ -280,7 +280,7 @@ impl Index {
     }
 }
 
-fn murmur_hash64a(key: &[u8]) -> u64 {
+pub fn murmur_hash64a(key: &[u8]) -> u64 {
     let seed: u64 = 0x1337B33F;
     let m: u64 = 0xc6a4a7935bd1e995;
     let r: i32 = 47;
@@ -362,3 +362,6 @@ fn read_u64<R: Read>(reader: &mut R) -> io::Result<u64> {
     reader.read_exact(&mut buf)?;
     Ok(LittleEndian::read_u64(&buf))
 }
+
+
+
