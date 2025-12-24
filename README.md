@@ -34,3 +34,5 @@ This project utilizes logic and resources from the community:
 - **[dat-schema](https://github.com/poe-tool-dev/dat-schema)**: Source for community-maintained DAT schemas.
 - **[poe-dat-viewer](https://github.com/SnosMe/poe-dat-viewer)**: Inspiration for DAT file structure and viewing logic.
 - **[LibGGPK3](https://github.com/aianlinb/LibGGPK3)**: Reference for GGPK file format handling.
+
+[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/P5P57KRR9)
