@@ -319,7 +319,7 @@ impl eframe::App for ExplorerApp {
                      
                      if let Some(ver) = &self.update_state.latest_version {
                           ui.separator();
-                          if ui.link(egui::RichText::new(format!("Update Available: v{}", ver)).color(egui::Color32::GREEN).strong()).clicked() {
+                          if ui.link(egui::RichText::new(format!("Update Available: {}", ver)).color(egui::Color32::GREEN).strong()).clicked() {
                               if let Some(url) = &self.update_state.release_url {
                                   let _ = open::that(url);
                               }
@@ -687,7 +687,7 @@ impl eframe::App for ExplorerApp {
                             ui.label("Checking for updates...");
                             ui.spinner();
                         } else if let Some(ver) = &self.update_state.latest_version {
-                             ui.label(egui::RichText::new(format!("New version available: v{}", ver)).color(egui::Color32::GREEN));
+                             ui.label(egui::RichText::new(format!("New version available: {}", ver)).color(egui::Color32::GREEN));
                              if let Some(url) = &self.update_state.release_url {
                                  if ui.button("Download Update").clicked() {
                                      let _ = open::that(url);

@@ -1,6 +1,6 @@
 [package]
 name = "ggpk-explorer"
-version = "1.0.11"
+version = "1.0.12"
 edition = "2021"
 
 [package.metadata.deb]
