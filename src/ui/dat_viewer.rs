@@ -318,6 +318,7 @@ impl DatViewer {
         }
     }
 
+    #[allow(dead_code)]
     pub fn convert_to_json(&self, data: &[u8], filename: &str) -> Option<String> {
         let path = std::path::Path::new(filename);
         let stem = path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();

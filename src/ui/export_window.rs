@@ -17,7 +17,7 @@ pub enum AudioFormat {
 pub enum DataFormat {
     Original,
     Json,
-    Csv, // Potential future addition
+
 }
 
 #[derive(Clone)]
@@ -80,9 +80,7 @@ impl ExportWindow {
         }
     }
     
-    pub fn close(&mut self) {
-        self.open = false;
-    }
+
 
     pub fn show(&mut self, ctx: &egui::Context) -> bool {
         let mut open = self.open;

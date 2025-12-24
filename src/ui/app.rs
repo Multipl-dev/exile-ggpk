@@ -494,7 +494,7 @@ impl eframe::App for ExplorerApp {
                                                                      DataFormat::Original => {
                                                                           let _ = std::fs::write(&full_path, file_data);
                                                                      }
-                                                                     _ => {let _ = std::fs::write(&full_path, file_data);}
+
                                                                  }
                                                              }
                                                              else {
