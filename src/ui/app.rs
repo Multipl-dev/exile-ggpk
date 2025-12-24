@@ -32,6 +32,8 @@ pub struct ExplorerApp {
 
     pub settings: crate::settings::AppSettings,
     pub settings_window: crate::ui::settings_window::SettingsWindow,
+    pub export_window: crate::ui::export_window::ExportWindow,
+    pub show_about: bool,
 }
 
 impl ExplorerApp {
@@ -40,7 +42,7 @@ impl ExplorerApp {
         let mut content_view = ContentView::default();
         
         // Try to load schema
-        // Use setting or default path in app data
+        // ... (lines omitted for brevity, keeping existing logic)
         let app_data_dir = crate::settings::AppSettings::get_app_data_dir();
         let default_schema_path = app_data_dir.join("schema.min.json");
         let default_schema_path_str = default_schema_path.to_string_lossy().to_string();
@@ -95,6 +97,8 @@ impl ExplorerApp {
             is_loading: false,
             settings,
             settings_window: crate::ui::settings_window::SettingsWindow::new(),
+            export_window: crate::ui::export_window::ExportWindow::new(),
+            show_about: false,
         };
 
         // Auto-load if path exists
@@ -258,8 +262,9 @@ impl eframe::App for ExplorerApp {
                                  self.tree_view = tree_view;
                                  
                                  let version = reader.version;
-                                 let game_ver = if self.is_poe2 { "Target: PoE 2" } else { "Target: PoE 1" };
-                                 self.status_msg = format!("Opened {:?} (v{}, {}){}", path, version, game_ver, extra_status);
+                                 let game_ver = if self.is_poe2 { "PoE 2" } else { "PoE 1" };
+                                 println!("Opened {:?} (v{}, {}){}", path, version, game_ver, extra_status);
+                                 self.status_msg = format!("GGPK Mounted ({})", game_ver);
                              },
                              Err(e) => {
                                  self.status_msg = format!("Error: {}", e);
@@ -297,41 +302,9 @@ impl eframe::App for ExplorerApp {
                     }
                 });
                 
-                ui.menu_button("Export", |ui| {
-                    if ui.button("Export Currently Selected File").clicked() {
-                        // Logic similar to "Export File" in content view
-                        // Need robust way to trigger this from menu.
-                         if let Some(sel) = &self.selected_file {
-                            match sel {
-                                FileSelection::BundleFile(hash) => {
-                                     // We need to access index, reader etc.
-                                     // This is slightly awkward in `menu_button` as we need `self` which is borrowed.
-                                     // But `ui.button` call is fine.
-                                     // We can call a helper method, but `self` is borrowed mutably by `update`.
-                                     // Which is fine? `ui` borrows from ctx?
-                                     // Actually eframe update takes `&mut self`.
-                                     // `ui.menu_button` takes closure `|ui|`.
-                                     // Inside closure we capture `self`. 
-                                     // Yes, this is fine because it's immediate mode.
-                                     
-                                     if let Some(reader) = &self.reader {
-                                         if let Some(index) = &self.bundle_index {
-                                             if let Some(file_info) = index.files.get(hash) {
-                                                 self.content_view.export_bundled_content(reader, index, file_info);
-                                             }
-                                         }
-                                     }
-                                },
-                                FileSelection::GgpkOffset(_) => {
-                                    // TODO: GGPK export
-                                }
-                            }
-                        }
-                        ui.close_menu();
-                    }
-                    ui.separator();
-                    ui.label("Batch Export (TODO)");
-                });
+                if ui.button("About").clicked() {
+                    self.show_about = true;
+                }
             });
         });
 
@@ -343,13 +316,205 @@ impl eframe::App for ExplorerApp {
                      ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                         if self.is_loading {
                             ui.spinner();
-                            ui.label("Mounting/Loading...");
+                            ui.label("Mounting GGPK...");
+                        }
+                        if self.status_msg.starts_with("GGPK Mounted") {
+                            let (rect, _) = ui.allocate_exact_size(egui::vec2(16.0, 10.0), egui::Sense::hover());
+                            ui.painter().circle_filled(rect.center(), 4.0, egui::Color32::GREEN);
                         }
                         ui.label(&self.status_msg);
                      });
                 });
             });
         });
+
+        // Export Window and Logic
+        let _ = self.export_window.show(ctx);
+        if self.export_window.confirmed {
+             self.export_window.confirmed = false;
+             if let Some(target_dir) = rfd::FileDialog::new().set_directory("/").pick_folder() {
+                 let hashes = self.export_window.hashes.clone();
+                 let settings = self.export_window.settings.clone();
+                 
+                 if let Some(reader) = &self.reader {
+                     if let Some(index) = &self.bundle_index {
+                         let reader_clone = reader.clone();
+                         let index_clone = index.clone();
+                         let (tx, rx) = std::sync::mpsc::channel();
+                         self.schema_update_rx = Some(rx); // Reusing rx for status
+                         self.status_msg = "Exporting...".to_string();
+                         self.is_loading = true;
+                         
+                         let schema_clone = self.content_view.dat_viewer.schema.clone();
+                         
+                         std::thread::spawn(move || {
+                             let mut count = 0;
+                             
+                             for hash in hashes {
+                                  if let Some(file_info) = index_clone.files.get(&hash) {
+                                      if let Some(bundle_info) = index_clone.bundles.get(file_info.bundle_index as usize) {
+                                         let bundle_path = format!("Bundles2/{}", bundle_info.name);
+                                         if let Ok(Some(file_record)) = reader_clone.read_file_by_path(&bundle_path) {
+                                             if let Ok(data) = reader_clone.get_data_slice(file_record.data_offset, file_record.data_length) {
+                                                 let mut cursor = std::io::Cursor::new(data);
+                                                 if let Ok(bundle) = crate::bundles::bundle::Bundle::read_header(&mut cursor) {
+                                                     if let Ok(decompressed_data) = bundle.decompress(&mut cursor) {
+                                                         let start = file_info.file_offset as usize;
+                                                         let end = start + file_info.file_size as usize;
+                                                         if end <= decompressed_data.len() {
+                                                             let file_data = &decompressed_data[start..end];
+                                                             
+                                                             let relative_path = std::path::Path::new(&file_info.path);
+                                                             let full_path = target_dir.join(relative_path);
+  
+                                                             if let Some(parent) = full_path.parent() {
+                                                                 let _ = std::fs::create_dir_all(parent);
+                                                             }
+                                                             
+                                                             use crate::ui::export_window::{TextureFormat, AudioFormat, DataFormat};
+                                                             
+                                                             // Texture
+                                                             if file_info.path.ends_with(".dds") {
+                                                                 match settings.texture_format {
+                                                                     TextureFormat::WebP => {
+                                                                         let mut converted = false;
+                                                                         let mut cursor = std::io::Cursor::new(file_data);
+                                                                         if let Ok(dds) = ddsfile::Dds::read(&mut cursor) {
+                                                                             if let Ok(image) = image_dds::image_from_dds(&dds, 0) {
+                                                                                 let img = image::DynamicImage::ImageRgba8(image);
+                                                                                 let dest = full_path.with_extension("webp");
+                                                                                 if img.save_with_format(dest, image::ImageFormat::WebP).is_ok() {
+                                                                                     converted = true;
+                                                                                 }
+                                                                             }
+                                                                         }
+                                                                         if !converted {
+                                                                             let _ = std::fs::write(&full_path, file_data);
+                                                                         }
+                                                                     },
+                                                                     TextureFormat::Png => {
+                                                                         let mut converted = false;
+                                                                         let mut cursor = std::io::Cursor::new(file_data);
+                                                                         if let Ok(dds) = ddsfile::Dds::read(&mut cursor) {
+                                                                             if let Ok(image) = image_dds::image_from_dds(&dds, 0) {
+                                                                                 let img = image::DynamicImage::ImageRgba8(image);
+                                                                                 let dest = full_path.with_extension("png");
+                                                                                 if img.save_with_format(dest, image::ImageFormat::Png).is_ok() {
+                                                                                     converted = true;
+                                                                                 }
+                                                                             }
+                                                                         }
+                                                                         if !converted {
+                                                                             let _ = std::fs::write(&full_path, file_data);
+                                                                         }
+                                                                     },
+                                                                     TextureFormat::OriginalDds => {
+                                                                          let _ = std::fs::write(&full_path, file_data);
+                                                                     }
+                                                                 }
+                                                             } 
+                                                             // Audio
+                                                             else if file_info.path.ends_with(".ogg") { 
+                                                                 match settings.audio_format {
+                                                                     AudioFormat::Wav => {
+                                                                         let cursor = std::io::Cursor::new(file_data.to_vec());
+                                                                         if let Ok(source) = rodio::Decoder::new(cursor) {
+                                                                              use rodio::Source;
+                                                                              let spec = hound::WavSpec {
+                                                                                  channels: source.channels(),
+                                                                                  sample_rate: source.sample_rate(),
+                                                                                  bits_per_sample: 16,
+                                                                                  sample_format: hound::SampleFormat::Int,
+                                                                              };
+                                                                              let dest = full_path.with_extension("wav");
+                                                                              if let Ok(mut writer) = hound::WavWriter::create(dest, spec) {
+                                                                                   for sample in source {
+                                                                                       let _ = writer.write_sample(sample);
+                                                                                   }
+                                                                                   let _ = writer.finalize();
+                                                                              } else {
+                                                                                   let _ = std::fs::write(&full_path, file_data);
+                                                                              }
+                                                                         } else {
+                                                                              let _ = std::fs::write(&full_path, file_data);
+                                                                         }
+                                                                     },
+                                                                     AudioFormat::Original => {
+                                                                          let _ = std::fs::write(&full_path, file_data);
+                                                                     }
+                                                                 }
+                                                             }
+                                                             // DAT
+                                                             else if file_info.path.ends_with(".dat") || file_info.path.ends_with(".datc64") || file_info.path.ends_with(".datl") || file_info.path.ends_with(".datl64") {
+                                                                 match settings.data_format {
+                                                                     DataFormat::Json => {
+                                                                         let mut converted = false;
+                                                                          if let Some(schema) = &schema_clone {
+                                                                               let stem = std::path::Path::new(&file_info.path).file_stem().and_then(|s| s.to_str()).unwrap_or("");
+                                                                               if let Some(table_def) = schema.tables.iter().find(|t| t.name.eq_ignore_ascii_case(stem)) {
+                                                                                    if let Ok(r) = crate::dat::reader::DatReader::new(file_data.to_vec(), &file_info.path) {
+                                                                                        use serde_json::{Map, Value};
+                                                                                        use crate::dat::reader::DatValue;
+                                                                                        
+                                                                                        let mut rows = Vec::new();
+                                                                                        for i in 0..r.row_count {
+                                                                                            if let Ok(vals) = r.read_row(i, table_def) {
+                                                                                                let mut map = Map::new();
+                                                                                                for (j, val) in vals.iter().enumerate() {
+                                                                                                    let col_name = table_def.columns.get(j).and_then(|c| c.name.clone()).unwrap_or_else(|| format!("Col{}", j));
+                                                                                                    let v = match val {
+                                                                                                        DatValue::Bool(b) => Value::from(*b),
+                                                                                                        DatValue::Int(i) => Value::from(*i),
+                                                                                                        DatValue::Long(l) => Value::from(*l),
+                                                                                                        DatValue::Float(f) => Value::from(*f),
+                                                                                                        DatValue::String(s) => Value::from(s.clone()),
+                                                                                                        DatValue::List(count, _) => Value::String(format!("List(len={})", count)), 
+                                                                                                        DatValue::ForeignRow(k) => Value::String(format!("Key({})", k)), 
+                                                                                                        _ => Value::Null,
+                                                                                                    };
+                                                                                                    map.insert(col_name, v);
+                                                                                                }
+                                                                                                rows.push(Value::Object(map));
+                                                                                            }
+                                                                                        }
+                                                                                        let json_out = Value::Array(rows);
+                                                                                        let dest = full_path.with_extension("json");
+                                                                                        if let Ok(s) = serde_json::to_string_pretty(&json_out) {
+                                                                                            if std::fs::write(dest, s).is_ok() {
+                                                                                                converted = true;
+                                                                                            }
+                                                                                        }
+                                                                                    }
+                                                                               }
+                                                                          }
+                                                                         if !converted {
+                                                                               let _ = std::fs::write(&full_path, file_data);
+                                                                         }
+                                                                     },
+                                                                     DataFormat::Original => {
+                                                                          let _ = std::fs::write(&full_path, file_data);
+                                                                     }
+                                                                     _ => {let _ = std::fs::write(&full_path, file_data);}
+                                                                 }
+                                                             }
+                                                             else {
+                                                                 let _ = std::fs::write(&full_path, file_data);
+                                                             }
+                                                             count += 1;
+                                                         }
+                                                     }
+                                                 }
+                                             }
+                                         }
+                                      }
+                                  }
+                             }
+                             let _ = tx.send(Ok(format!("Exported {} files.", count)));
+                         });
+            }
+        }
+    }
+}
 
         egui::SidePanel::left("tree_panel")
             .resizable(true)
@@ -363,100 +528,10 @@ impl eframe::App for ExplorerApp {
                  match action {
                      crate::ui::tree_view::TreeViewAction::None => {},
                      crate::ui::tree_view::TreeViewAction::Select => {}, // Handled by mut ref
-                     crate::ui::tree_view::TreeViewAction::ExportBundleFolder(hashes, _folder_name) => {
-                         if let Some(target_dir) = rfd::FileDialog::new().set_directory("/").pick_folder() {
-                             // Clone necessary data for thread/loop
-                             // Doing it on main thread for now (blocking) to ensure simplicity.
-                             // Ideally spawn thread.
-                             
-                             if let Some(reader) = &self.reader {
-                                 if let Some(index) = &self.bundle_index {
-                                      // TODO: DAT -> JSON requires schema
-                                      
-                                      for hash in hashes {
-                                          if let Some(file_info) = index.files.get(&hash) {
-                                              // Read file
-                                               if let Some(bundle_info) = index.bundles.get(file_info.bundle_index as usize) {
-                                                 let bundle_path = format!("Bundles2/{}", bundle_info.name);
-                                                 if let Ok(Some(file_record)) = reader.read_file_by_path(&bundle_path) {
-                                                     if let Ok(data) = reader.get_data_slice(file_record.data_offset, file_record.data_length) {
-                                                         let mut cursor = std::io::Cursor::new(data);
-                                                         if let Ok(bundle) = crate::bundles::bundle::Bundle::read_header(&mut cursor) {
-                                                             if let Ok(decompressed_data) = bundle.decompress(&mut cursor) {
-                                                                 let start = file_info.file_offset as usize;
-                                                                 let end = start + file_info.file_size as usize;
-                                                                 if end <= decompressed_data.len() {
-                                                                     let file_data = &decompressed_data[start..end];
-                                                                     
-                                                                     // Determine relative path?
-                                                                     // file_info.path is full path like "Art/Textures/..."
-                                                                     // folder_name is like "Textures".
-                                                                     // We just write (target_dir / file_info.path).
-                                                                     // We need to create parent dirs.
-                                                                     
-                                                                     let relative_path = std::path::Path::new(&file_info.path);
-                                                                     let full_path = target_dir.join(relative_path);
-                                                                     
-                                                                     if let Some(parent) = full_path.parent() {
-                                                                         let _ = std::fs::create_dir_all(parent);
-                                                                     }
-                                                                     
-                                                                     // Convert?
-                                                                     if file_info.path.ends_with(".dds") {
-                                                                         // Convert to WebP
-                                                                         // Try image crate
-                                                                         let mut img_opt = None;
-                                                                          if let Ok(img) = image::load_from_memory(file_data) {
-                                                                              img_opt = Some(img);
-                                                                          } else {
-                                                                              // Try image_dds
-                                                                               let mut cursor = std::io::Cursor::new(file_data);
-                                                                               if let Ok(dds) = ddsfile::Dds::read(&mut cursor) {
-                                                                                   if let Ok(image) = image_dds::image_from_dds(&dds, 0) {
-                                                                                       img_opt = Some(image::DynamicImage::ImageRgba8(image));
-                                                                                   }
-                                                                               }
-                                                                          }
-                                                                          
-                                                                          if let Some(img) = img_opt {
-                                                                              let webp_path = full_path.with_extension("webp");
-                                                                              // Encoding to WebP requires `image` crate with unchecked features or specific encoder.
-                                                                              // `image` 0.25 supports webp.
-                                                                              // save_buffer_with_format...
-                                                                              // Actually `img.save_with_format(path, image::ImageFormat::WebP)`
-                                                                              let _ = img.save_with_format(webp_path, image::ImageFormat::WebP);
-                                                                          } else {
-                                                                              // Failed to decode, write raw dds
-                                                                              let _ = std::fs::write(&full_path, file_data);
-                                                                          }
-                                                                     } else if file_info.path.ends_with(".dat") || file_info.path.ends_with(".datc64") || file_info.path.ends_with(".datl") || file_info.path.ends_with(".datl64") { 
-                                                                         // Try to export JSON if schema available match
-                                                                         let mut json_exported = false;
-                                                                         if let Some(json) = self.content_view.dat_viewer.convert_to_json(file_data, &file_info.path) {
-                                                                             let json_path = full_path.with_extension("json");
-                                                                             if std::fs::write(&json_path, json).is_ok() {
-                                                                                 json_exported = true;
-                                                                             }
-                                                                         }
-                                                                         
-                                                                         if !json_exported {
-                                                                             let _ = std::fs::write(&full_path, file_data);
-                                                                         }
-                                                                     } else {
-                                                                         let _ = std::fs::write(&full_path, file_data);
-                                                                     }
-                                                                 }
-                                                             }
-                                                         }
-                                                     }
-                                                 }
-                                               }
-                                          }
-                                      }
-                                 }
-                             }
-                         }
-                     }
+                      crate::ui::tree_view::TreeViewAction::RequestExport { hashes, name, is_folder } => {
+                          self.export_window.open_for(&name, is_folder);
+                          self.export_window.hashes = hashes;
+                      }
                  }
 
                     });
@@ -571,8 +646,35 @@ impl eframe::App for ExplorerApp {
                       }
                       Ok(text)
                   })();
-                  let _ = tx.send(result);
-             });
+                   let _ = tx.send(result);
+              });
+        }
+        
+        if self.show_about {
+            egui::Window::new("About")
+                .open(&mut self.show_about)
+                .collapsible(false)
+                .resizable(false)
+                .show(ctx, |ui| {
+                    ui.vertical_centered(|ui| {
+                        ui.heading("GGPK Explorer");
+                        ui.label(format!("v{}", env!("CARGO_PKG_VERSION")));
+                        ui.separator();
+                        ui.label("Created by Judd");
+                        ui.add_space(8.0);
+                        ui.hyperlink_to("GitHub Repository", "https://github.com/juddisjudd/ggpk-explorer");
+                        ui.add_space(4.0);
+                        ui.hyperlink_to("Support on Ko-fi", "https://ko-fi.com/ohitsjudd");
+                        ui.add_space(8.0);
+                        
+                        ui.separator();
+                        ui.label("Credits & Acknowledgements:");
+                        ui.hyperlink_to("ooz (Oodle Decompression)", "https://github.com/zao/ooz");
+                        ui.hyperlink_to("dat-schema", "https://github.com/poe-tool-dev/dat-schema");
+                        ui.hyperlink_to("poe-dat-viewer", "https://github.com/SnosMe/poe-dat-viewer");
+                        ui.hyperlink_to("LibGGPK3", "https://github.com/aianlinb/LibGGPK3");
+                    });
+                });
         }
     }
 }

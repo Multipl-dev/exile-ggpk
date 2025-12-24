@@ -24,6 +24,7 @@ pub struct ContentView {
     pub zoom_level: f32,
 
     pub cdn_loader: Option<crate::bundles::cdn::CdnBundleLoader>,
+    pub audio_volume: f32,
 }
 
 impl Default for ContentView {
@@ -39,6 +40,7 @@ impl Default for ContentView {
             zoom_level: 1.0,
 
             cdn_loader: None,
+            audio_volume: 0.5,
         }
     }
 }
@@ -219,7 +221,7 @@ impl ContentView {
 
     fn show_audio_player(&mut self, ui: &mut egui::Ui, reader: &GgpkReader, index: &Index, file_info: &crate::bundles::index::FileInfo, hash: u64) {
         ui.group(|ui| {
-            ui.label("Audio Player");
+            ui.heading("Audio Player");
             
             ui.horizontal(|ui| {
                 if ui.button("▶ Play").clicked() {
@@ -233,14 +235,32 @@ impl ContentView {
                     self.audio_sink = None;
                 }
             });
+
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                ui.label("Volume:");
+                if ui.add(egui::Slider::new(&mut self.audio_volume, 0.0..=1.0).show_value(true)).changed() {
+                     if let Some(sink) = &self.audio_sink {
+                         sink.set_volume(self.audio_volume);
+                     }
+                }
+            });
+            ui.add_space(4.0);
             
-            if let Some(sink) = &self.audio_sink {
-                 if sink.empty() {
-                     ui.label("Status: Stopped / Finished");
+            let status = if let Some(sink) = &self.audio_sink {
+                 if sink.empty() { "Stopped" } else { "Playing..." }
+            } else {
+                 "Stopped"
+            };
+            
+            ui.horizontal(|ui| {
+                 ui.label("Status:");
+                 if status == "Playing..." {
+                     ui.colored_label(egui::Color32::GREEN, status);
                  } else {
-                     ui.label("Status: Playing...");
+                     ui.label(status);
                  }
-            }
+            });
         });
     }
 
@@ -483,6 +503,7 @@ impl ContentView {
                                           if let Ok(decoder) = rodio::Decoder::new(cursor) {
                                                // Recreate sink for each playback to avoid state issues
                                                if let Ok(sink) = rodio::Sink::try_new(stream_handle) {
+                                                   sink.set_volume(self.audio_volume);
                                                    sink.append(decoder);
                                                    sink.play(); 
                                                    self.audio_sink = Some(sink);

@@ -26,7 +26,7 @@ pub struct DirectoryInfo {
     pub recursive_size: u32,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Index {
     pub bundles: Vec<BundleInfo>,
     pub files: HashMap<u64, FileInfo>,

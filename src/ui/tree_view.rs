@@ -24,7 +24,7 @@ impl Default for TreeView {
 pub enum TreeViewAction {
     None,
     Select,
-    ExportBundleFolder(Vec<u64>, String),
+    RequestExport { hashes: Vec<u64>, name: String, is_folder: bool },
 }
 
 impl TreeView {
@@ -103,10 +103,17 @@ impl TreeView {
                 }
             }
 
-            if ui.button(label).clicked() {
+            let response = ui.button(label);
+            if response.clicked() {
                  *selected_file = Some(crate::ui::app::FileSelection::BundleFile(hash));
                  *action = TreeViewAction::Select;
             }
+            response.context_menu(|ui| {
+                if ui.button("Export...").clicked() {
+                    *action = TreeViewAction::RequestExport { hashes: vec![hash], name: node.name.clone(), is_folder: false };
+                    ui.close_menu();
+                }
+            });
         } else {
             let id = ui.make_persistent_id(&node.name).with(&node.children.len()); 
             let header = egui::CollapsingHeader::new(&node.name)
@@ -133,7 +140,7 @@ impl TreeView {
                 if ui.button("Export Folder...").clicked() {
                     let mut hashes = Vec::new();
                     self.collect_hashes(node, &mut hashes);
-                    *action = TreeViewAction::ExportBundleFolder(hashes, node.name.clone());
+                    *action = TreeViewAction::RequestExport { hashes, name: node.name.clone(), is_folder: true };
                     ui.close_menu();
                 }
             });
