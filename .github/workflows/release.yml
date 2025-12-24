@@ -34,6 +34,9 @@ jobs:
           target: ${{ matrix.target }}
 
       - uses: swatinem/rust-cache@v2
+        with:
+          shared-key: "release-build"
+          save-if: ${{ github.ref_name == 'master' }}
 
       - name: Build Release
         run: cargo build --release --target ${{ matrix.target }}
