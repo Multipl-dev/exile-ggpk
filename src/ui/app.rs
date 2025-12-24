@@ -682,6 +682,28 @@ impl eframe::App for ExplorerApp {
                         ui.add_space(8.0);
                         
                         ui.separator();
+                        ui.label("Update Status:");
+                        if self.update_state.pending {
+                            ui.label("Checking for updates...");
+                            ui.spinner();
+                        } else if let Some(ver) = &self.update_state.latest_version {
+                             ui.label(egui::RichText::new(format!("New version available: v{}", ver)).color(egui::Color32::GREEN));
+                             if let Some(url) = &self.update_state.release_url {
+                                 if ui.button("Download Update").clicked() {
+                                     let _ = open::that(url);
+                                 }
+                             }
+                        } else if let Some(err) = &self.update_state.error_msg {
+                             ui.label(egui::RichText::new(format!("Error checking updates: {}", err)).color(egui::Color32::RED));
+                        } else {
+                             ui.label("You are up to date.");
+                             if ui.button("Check again").clicked() {
+                                 self.update_state = crate::update::UpdateState::new();
+                             }
+                        }
+                        ui.add_space(8.0);
+                        
+                        ui.separator();
                         ui.label("Credits & Acknowledgements:");
                         ui.hyperlink_to("ooz (Oodle Decompression)", "https://github.com/zao/ooz");
                         ui.hyperlink_to("dat-schema", "https://github.com/poe-tool-dev/dat-schema");
