@@ -72,7 +72,7 @@ impl ExportWindow {
         self.target_name = name.to_string();
         self.is_folder = is_folder;
         // Reset settings to default on new open? Or keep persistence?
-        // Let's keep persistence for session-based workflow, but maybe reset recursion if it's a file?
+        // Keep persistence but reset recursive if it's a file
         if !is_folder {
             self.settings.recursive = false;
         } else {
@@ -80,8 +80,6 @@ impl ExportWindow {
         }
     }
     
-
-
     pub fn show(&mut self, ctx: &egui::Context) -> bool {
         let mut open = self.open;
         if !open { return false; }
@@ -98,33 +96,50 @@ impl ExportWindow {
                 ui.heading(format!("Exporting: {}", self.target_name));
                 ui.separator();
                 
-                ui.heading("Texture Options");
-                ui.horizontal(|ui| {
-                    ui.radio_value(&mut self.settings.texture_format, TextureFormat::OriginalDds, "Original (DDS)");
-                    ui.radio_value(&mut self.settings.texture_format, TextureFormat::WebP, "Convert to WebP");
-                    ui.radio_value(&mut self.settings.texture_format, TextureFormat::Png, "Convert to PNG");
-                });
+                let is_dds = self.target_name.ends_with(".dds");
+                let is_ogg = self.target_name.ends_with(".ogg");
+                let is_dat = self.target_name.contains(".dat"); // Covers .dat, .dat64, etc
                 
-                ui.add_space(8.0);
+                let show_all = self.is_folder;
                 
-                ui.heading("Audio Options");
-                ui.horizontal(|ui| {
-                    ui.radio_value(&mut self.settings.audio_format, AudioFormat::Original, "Original (OGG/WAV)");
-                    ui.radio_value(&mut self.settings.audio_format, AudioFormat::Wav, "Convert to WAV");
-                });
-
-                ui.add_space(8.0);
+                if show_all || is_dds {
+                    ui.heading("Texture Options");
+                    ui.horizontal(|ui| {
+                        ui.radio_value(&mut self.settings.texture_format, TextureFormat::OriginalDds, "Original (DDS)");
+                        ui.radio_value(&mut self.settings.texture_format, TextureFormat::WebP, "Convert to WebP");
+                        ui.radio_value(&mut self.settings.texture_format, TextureFormat::Png, "Convert to PNG");
+                    });
+                    ui.add_space(8.0);
+                }
                 
-                ui.heading("Data Options (.dat)");
-                ui.horizontal(|ui| {
-                    ui.radio_value(&mut self.settings.data_format, DataFormat::Original, "Original");
-                    ui.radio_value(&mut self.settings.data_format, DataFormat::Json, "Convert to JSON");
-                });
+                if show_all || is_ogg {
+                    ui.heading("Audio Options");
+                    ui.horizontal(|ui| {
+                        ui.radio_value(&mut self.settings.audio_format, AudioFormat::Original, "Original (OGG/WAV)");
+                        ui.radio_value(&mut self.settings.audio_format, AudioFormat::Wav, "Convert to WAV");
+                    });
+                    ui.add_space(8.0);
+                }
+                
+                if show_all || is_dat {
+                    ui.heading("Data Options (.dat)");
+                    ui.horizontal(|ui| {
+                        ui.radio_value(&mut self.settings.data_format, DataFormat::Original, "Original");
+                        ui.radio_value(&mut self.settings.data_format, DataFormat::Json, "Convert to JSON");
+                    });
+                     ui.add_space(8.0);
+                }
 
                 if self.is_folder {
-                    ui.add_space(8.0);
                     ui.separator();
                     ui.checkbox(&mut self.settings.recursive, "Recursive Export (Include subfolders)");
+                    ui.add_space(8.0);
+                }
+                
+                // If unknown file type, show simple Confirmation
+                if !show_all && !is_dds && !is_ogg && !is_dat {
+                     ui.label("Ready to export file.");
+                     ui.add_space(8.0);
                 }
 
                 ui.separator();

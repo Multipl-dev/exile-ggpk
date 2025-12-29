@@ -103,16 +103,18 @@ impl TreeView {
                 }
             }
 
-            let response = ui.button(label);
-            if response.clicked() {
-                 *selected_file = Some(crate::ui::app::FileSelection::BundleFile(hash));
-                 *action = TreeViewAction::Select;
-            }
-            response.context_menu(|ui| {
-                if ui.button("Export...").clicked() {
-                    *action = TreeViewAction::RequestExport { hashes: vec![hash], name: node.name.clone(), is_folder: false };
-                    ui.close_menu();
+            ui.push_id(hash, |ui| {
+                let response = ui.button(label);
+                if response.clicked() {
+                     *selected_file = Some(crate::ui::app::FileSelection::BundleFile(hash));
+                     *action = TreeViewAction::Select;
                 }
+                response.context_menu(|ui| {
+                    if ui.button("Export...").clicked() {
+                        *action = TreeViewAction::RequestExport { hashes: vec![hash], name: node.name.clone(), is_folder: false };
+                        ui.close_menu();
+                    }
+                });
             });
         } else {
             let id = ui.make_persistent_id(&node.name).with(&node.children.len()); 

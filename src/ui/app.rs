@@ -28,6 +28,7 @@ pub struct ExplorerApp {
     // Async loading
     load_rx: Option<Receiver<Result<(Arc<GgpkReader>, Option<crate::bundles::index::Index>, bool, PathBuf, String, TreeView), String>>>,
     pub schema_update_rx: Option<Receiver<Result<String, String>>>,
+    pub export_status_rx: Option<Receiver<Result<String, String>>>,
     is_loading: bool,
 
     pub settings: crate::settings::AppSettings,
@@ -95,6 +96,7 @@ impl ExplorerApp {
             bundle_index: None,
             load_rx: None,
             schema_update_rx: None,
+            export_status_rx: None,
             is_loading: false,
             settings: settings.clone(),
             settings_window: crate::ui::settings_window::SettingsWindow::new(),
@@ -355,11 +357,12 @@ impl eframe::App for ExplorerApp {
                          let reader_clone = reader.clone();
                          let index_clone = index.clone();
                          let (tx, rx) = std::sync::mpsc::channel();
-                         self.schema_update_rx = Some(rx); // Reusing rx for status
+                         self.export_status_rx = Some(rx); // Use dedicated channel
                          self.status_msg = "Exporting...".to_string();
                          self.is_loading = true;
                          
                          let schema_clone = self.content_view.dat_viewer.schema.clone();
+                         let cdn_loader = self.content_view.cdn_loader.clone();
                          
                          std::thread::spawn(move || {
                              let mut count = 0;
@@ -368,8 +371,32 @@ impl eframe::App for ExplorerApp {
                                   if let Some(file_info) = index_clone.files.get(&hash) {
                                       if let Some(bundle_info) = index_clone.bundles.get(file_info.bundle_index as usize) {
                                          let bundle_path = format!("Bundles2/{}", bundle_info.name);
+                                         
+                                         let mut raw_bundle_data = None;
+                                         
+                                         // 1. Try GGPK
                                          if let Ok(Some(file_record)) = reader_clone.read_file_by_path(&bundle_path) {
                                              if let Ok(data) = reader_clone.get_data_slice(file_record.data_offset, file_record.data_length) {
+                                                 raw_bundle_data = Some(data.to_vec());
+                                             }
+                                         }
+                                         
+                                         // 2. Try CDN
+                                         if raw_bundle_data.is_none() {
+                                              if let Some(cdn) = &cdn_loader {
+                                                  // Construct fetch name (ensure .bundle.bin)
+                                                  let fetch_name = if bundle_info.name.ends_with(".bundle.bin") {
+                                                      bundle_info.name.clone()
+                                                  } else {
+                                                      format!("{}.bundle.bin", bundle_info.name)
+                                                  };
+                                                  if let Ok(data) = cdn.fetch_bundle(&fetch_name) {
+                                                      raw_bundle_data = Some(data);
+                                                  }
+                                              }
+                                         }
+                                         
+                                         if let Some(data) = raw_bundle_data {
                                                  let mut cursor = std::io::Cursor::new(data);
                                                  if let Ok(bundle) = crate::bundles::bundle::Bundle::read_header(&mut cursor) {
                                                      if let Ok(decompressed_data) = bundle.decompress(&mut cursor) {
@@ -515,7 +542,6 @@ impl eframe::App for ExplorerApp {
                                                                  let _ = std::fs::write(&full_path, file_data);
                                                              }
                                                              count += 1;
-                                                         }
                                                      }
                                                  }
                                              }
@@ -571,6 +597,40 @@ impl eframe::App for ExplorerApp {
                  });
              }
         });
+
+        // Handle Export Requests from Content View
+        if let Some((hashes, name)) = self.content_view.export_requested.take() {
+             // Determine if it's a folder or single file based on count
+             let is_folder = hashes.len() > 1; // Or check if it's actually a directory in tree view, but here we just export what's requested. 
+             // Content view export is usually single file unless we implement multi-select later.
+             // But TreeView export can be folder.
+             // If Content View context menu is used, it's one file.
+             
+             self.export_window.open_for(&name, is_folder);
+             self.export_window.hashes = hashes;
+        }
+
+        // Poll Export Status
+        if let Some(rx) = &self.export_status_rx {
+             match rx.try_recv() {
+                 Ok(Ok(msg)) => {
+                     self.status_msg = msg;
+                     self.is_loading = false;
+                     self.export_status_rx = None;
+                 },
+                 Ok(Err(e)) => {
+                     self.status_msg = format!("Export Failed: {}", e);
+                     self.is_loading = false;
+                     self.export_status_rx = None;
+                 },
+                 Err(std::sync::mpsc::TryRecvError::Empty) => {},
+                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                     self.status_msg = "Export Thread Disconnected".to_string();
+                     self.is_loading = false;
+                     self.export_status_rx = None;
+                 }
+             }
+        }
 
         // Detect settings changes
         let old_patch_ver = self.settings.poe2_patch_version.clone();

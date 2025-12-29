@@ -108,9 +108,6 @@ impl DatViewer {
                  if let Some(table) = table {
                  ui.horizontal(|ui| {
                      ui.label(format!("Table: {} (ver: {})", table.name, table.valid_for.unwrap_or(0)));
-                     if ui.button("Export JSON").clicked() {
-                         self.export_json(table);
-                     }
                  });
 
                  use egui_extras::{TableBuilder, Column};

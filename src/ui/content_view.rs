@@ -25,6 +25,9 @@ pub struct ContentView {
 
     pub cdn_loader: Option<crate::bundles::cdn::CdnBundleLoader>,
     pub audio_volume: f32,
+    
+    // (hashes, name_for_title)
+    pub export_requested: Option<(Vec<u64>, String)>,
 }
 
 impl Default for ContentView {
@@ -41,6 +44,7 @@ impl Default for ContentView {
 
             cdn_loader: None,
             audio_volume: 0.5,
+            export_requested: None,
         }
     }
 }
@@ -72,17 +76,6 @@ impl ContentView {
                 FileSelection::BundleFile(hash) => {
                     if let Some(index) = bundle_index {
                         if let Some(file_info) = index.files.get(&hash) {
-                             ui.heading(&file_info.path);
-                            // Header Info (Hidden by default, maybe toggle?)
-                             // ui.heading(&file_info.path);
-                             // ui.label(format!("Size: {} bytes", file_info.file_size));
-                             // ui.separator();
-                             
-                             if let Some(err) = &self.last_error {
-                                 ui.colored_label(egui::Color32::RED, format!("Error: {}", err));
-                                 ui.separator();
-                             }
-
                              // Auto-load logic
                              let mut perform_load = false;
                              
@@ -106,16 +99,14 @@ impl ContentView {
                              if self.failed_loads.contains(&hash) {
                                  perform_load = false;
                              }
-
-                             ui.horizontal(|ui| {
-                                 if ui.button("Reload Content").clicked() {
-                                     self.load_bundled_content(ui.ctx(), reader, index, file_info, hash);
-                                 }
-                                 if ui.button("Export File").clicked() {
-                                      self.export_bundled_content(reader, index, file_info);
-                                 }
-                                 if ui.button("Debug Header").clicked() {
-                                     self.debug_bundled_header(reader, index, file_info);
+                             
+                             // Header with Context Menu
+                             let label = egui::RichText::new(&file_info.path).heading();
+                             let response = ui.label(label);
+                             response.context_menu(|ui| {
+                                 if ui.button("Export...").clicked() {
+                                     self.export_requested = Some((vec![hash], file_info.path.clone()));
+                                     ui.close_menu();
                                  }
                              });
 
@@ -531,65 +522,8 @@ impl ContentView {
                   }
               }
           }
-     }
-
-    pub fn export_bundled_content(&self, reader: &GgpkReader, index: &Index, file_info: &crate::bundles::index::FileInfo) {
-         if let Some(path) = rfd::FileDialog::new().set_file_name(&file_info.path).save_file() {
-             if let Some(bundle_info) = index.bundles.get(file_info.bundle_index as usize) {
-                 let bundle_path = format!("Bundles2/{}", bundle_info.name);
-                 if let Ok(Some(file_record)) = reader.read_file_by_path(&bundle_path) {
-                     if let Ok(data) = reader.get_data_slice(file_record.data_offset, file_record.data_length) {
-                         let mut cursor = std::io::Cursor::new(data);
-                         if let Ok(bundle) = crate::bundles::bundle::Bundle::read_header(&mut cursor) {
-                             if let Ok(decompressed_data) = bundle.decompress(&mut cursor) {
-                                  let start = file_info.file_offset as usize;
-                                  let end = start + file_info.file_size as usize;
-                                  if end <= decompressed_data.len() {
-                                      let file_data = &decompressed_data[start..end];
-                                      let _ = std::fs::write(path, file_data);
-                                  }
-                             }
-                         }
-                     }
-                 }
-             }
-         }
-    }
-
-    fn debug_bundled_header(&self, reader: &GgpkReader, index: &Index, file_info: &crate::bundles::index::FileInfo) {
-          if let Some(bundle_info) = index.bundles.get(file_info.bundle_index as usize) {
-              let bundle_path = format!("Bundles2/{}", bundle_info.name);
-              if let Ok(Some(file_record)) = reader.read_file_by_path(&bundle_path) {
-                  if let Ok(data) = reader.get_data_slice(file_record.data_offset, file_record.data_length) {
-                      let mut cursor = std::io::Cursor::new(data);
-                      if let Ok(bundle) = crate::bundles::bundle::Bundle::read_header(&mut cursor) {
-                          if let Ok(decompressed_data) = bundle.decompress(&mut cursor) {
-                              let start = file_info.file_offset as usize;
-                              let end = start + file_info.file_size as usize;
-                              if end <= decompressed_data.len() {
-                                  let file_data = &decompressed_data[start..end];
-                                  println!("DEBUG HEADER for {}:", file_info.path);
-                                  let len = std::cmp::min(64, file_data.len());
-                                  let header = &file_data[0..len];
-                                  println!("Bytes: {:02X?}", header);
-                                  if file_data.len() >= 4 {
-                                      use byteorder::{ByteOrder, LittleEndian};
-                                      let u32_val = LittleEndian::read_u32(file_data);
-                                      println!("First u32: {}", u32_val);
-                                  }
-                              }
-                          }
-                      }
-                  }
-              }
-          }
-    }
 }
-
-
-
-
-
+}
 
 
 

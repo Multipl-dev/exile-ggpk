@@ -4,6 +4,7 @@ use std::io::Write;
 use reqwest::blocking::Client;
 use std::error::Error;
 
+#[derive(Clone)]
 pub struct CdnBundleLoader {
     cache_dir: PathBuf,
     client: Client,
