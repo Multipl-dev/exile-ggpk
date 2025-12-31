@@ -12,8 +12,7 @@ pub struct TreeView {
     search_term: String,
     active_search_term: String,
     search_index: Option<Arc<SearchIndex>>,
-    // Use Vec<bool> for dense lookup (faster than HashSet)
-    // (matches, has_descendants, count, generation)
+
     search_tx: Option<Sender<(Vec<bool>, Vec<bool>, usize, u64)>>, 
     search_rx: Option<Receiver<(Vec<bool>, Vec<bool>, usize, u64)>>,
     matched_results: Vec<bool>, 
@@ -36,10 +35,9 @@ pub enum SearchCategory {
 }
 
 struct SearchIndex {
-    // files: (id, lowercase_name)
+
     files: Vec<(usize, String)>,
-    // parents: index = child_id, value = parent_id. 
-    // Root has parent = usize::MAX or self.
+
     parents: Vec<usize>, 
     max_id: usize,
 }
@@ -135,7 +133,7 @@ impl TreeView {
         let mut next_id = 1;
         let mut files = Vec::new();
 
-        // Map child_id -> parent_id for rapid propagation
+
         let mut parent_map = Vec::new(); 
         parent_map.push((0, 0)); // Root parent is self
 
@@ -163,7 +161,7 @@ impl TreeView {
                         node
                     });
                 } else {
-                    // Directory
+
                     current = current.children.entry(part.to_string()).or_insert_with(|| {
                         let node = BundleNode {
                             id: next_id,
@@ -180,7 +178,7 @@ impl TreeView {
             }
         }
 
-        // Convert parent_map to dense Vec<usize>
+
         let mut parents = vec![0; next_id];
         for (child, parent) in parent_map {
             if child < parents.len() {
@@ -200,7 +198,7 @@ impl TreeView {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                  let is_committed = !self.search_term.is_empty() && self.search_term == self.active_search_term;
                  
-                 // Type Filter
+
                  egui::ComboBox::from_id_salt("search_filter")
                      .selected_text(format!("{:?}", self.search_category))
                      .show_ui(ui, |ui| {
@@ -223,7 +221,7 @@ impl TreeView {
                      }
                  }
                  
-                 // Text edit fills remaining space
+
                  let response = ui.add_sized(ui.available_size(), egui::TextEdit::singleline(&mut self.search_term).id(ui.make_persistent_id("search_box")));
                  if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                      trigger_search = true;
@@ -232,7 +230,7 @@ impl TreeView {
         });
         ui.separator();
         
-        // Poll for results
+
         if let Some(rx) = &self.search_rx {
             if let Ok((results, descendants, count, gen)) = rx.try_recv() {
                 if gen == self.search_generation {
@@ -241,7 +239,7 @@ impl TreeView {
                     self.match_count = count;
                     self.is_searching = false;
                 }
-                // If gen != self.search_generation, it's an old result, ignore it.
+
             }
         }
 
@@ -250,12 +248,9 @@ impl TreeView {
              let term_lower = self.active_search_term.to_lowercase();
              self.search_generation += 1;
              
-             // Clear previous results immediately to prevent ghosts
-             self.matched_results.clear();
-             // Don't clear results immediately to avoid flicker. 
-             // Logic relies on search_generation to discard stale results.
+
              
-             // Reset limit on new search
+
              self.render_limit.set(2000);
 
              if term_lower.is_empty() {
@@ -275,13 +270,13 @@ impl TreeView {
                          
                          thread::spawn(move || {
                              let max_id = index.max_id;
-                             // 1. Find exact matches
+
                              let mut results = vec![false; max_id];
                              let mut count = 0;
                              
                              for (id, name_lower) in &index.files {
                                  if name_lower.contains(&term_lower) {
-                                     // Check Category
+
                                      let is_match = match category {
                                          SearchCategory::All => true,
                                          SearchCategory::Texture => name_lower.ends_with(".dds") || name_lower.ends_with(".png"),
@@ -299,7 +294,7 @@ impl TreeView {
                                  }
                              }
                              
-                             // 2. Propagate matches (Vectorized)
+
                              let mut descendants = vec![false; max_id];
                              
                              for id in (1..max_id).rev() {
@@ -307,7 +302,7 @@ impl TreeView {
                                  let has_desc = descendants[id];
                                  
                                  if is_match || has_desc {
-                                     // Propagate to parent
+
                                      let parent_id = index.parents[id];
                                      if parent_id < descendants.len() { // Root parent 0 is ok
                                           descendants[parent_id] = true;
@@ -342,10 +337,9 @@ impl TreeView {
         *render_count += 1;
 
         if !self.active_search_term.is_empty() {
-            // Check flags using ID
+
             let id = node.id;
-            // Bounds check slightly needed if vectors are empty/cleared
-            // If searching but results cleared -> return false (hide content until ready)
+
             let matches = if id < self.matched_results.len() { 
                 self.matched_results[id] 
             } else { 
@@ -368,7 +362,7 @@ impl TreeView {
         if let Some(hash) = node.file_hash {
             let mut label = egui::RichText::new(&node.name);
             
-            // Check schema if .dat file
+
             if node.name.ends_with(".dat") || node.name.ends_with(".datc64") || node.name.ends_with(".datl") || node.name.ends_with(".datl64") {
                 if let Some(s) = schema {
                     // Assuming node.name is filename like "Stats.dat"
@@ -402,11 +396,10 @@ impl TreeView {
                 id = id.with("filtered");
             }
 
-            // Directory
-            // Collect children to sort them? 
+ 
             let mut children: Vec<&BundleNode> = node.children.values().collect();
             children.sort_by(|a, b| {
-                // Directories first, then files
+
                 let a_is_dir = !a.children.is_empty();
                 let b_is_dir = !b.children.is_empty();
                 if a_is_dir == b_is_dir {
@@ -416,9 +409,7 @@ impl TreeView {
                 }
             });
 
-            // Determine Open State
-            // Always auto-expand search results. 
-            // The render_count cap (2000) prevents hangs.
+
             let open_state = if !self.active_search_term.is_empty() {
                  Some(true)
             } else {
@@ -478,7 +469,7 @@ impl TreeView {
                     Ok(dir) => {
                         use crate::ggpk::record::RecordTag;
                         
-                        // Collect valid entries with headers
+
                         let mut valid_entries = Vec::new();
                         for entry in dir.entries {
                              if let Ok(header) = reader.read_record_header(entry.offset) {
@@ -486,7 +477,7 @@ impl TreeView {
                              }
                         }
                         
-                        // Sort: Directories (PDIR) first, then by internal order (Offset)
+
                         valid_entries.sort_by(|a, b| {
                             let tag_a = a.1.tag;
                             let tag_b = b.1.tag;
@@ -497,7 +488,7 @@ impl TreeView {
                             if a_is_dir != b_is_dir {
                                 b_is_dir.cmp(&a_is_dir) // True > False
                             } else {
-                                // Fallback to offset if we can't read name easily without potentially expensive reads
+
                                 a.0.offset.cmp(&b.0.offset)
                             }
                         });

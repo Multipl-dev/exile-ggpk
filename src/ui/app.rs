@@ -25,7 +25,7 @@ pub struct ExplorerApp {
     pub is_poe2: bool,
     pub bundle_index: Option<crate::bundles::index::Index>,
     
-    // Async loading
+
     load_rx: Option<Receiver<Result<(Arc<GgpkReader>, Option<crate::bundles::index::Index>, bool, PathBuf, String, TreeView), String>>>,
     pub schema_update_rx: Option<Receiver<Result<String, String>>>,
     pub export_status_rx: Option<Receiver<Result<String, String>>>,
@@ -43,8 +43,7 @@ impl ExplorerApp {
         let settings = crate::settings::AppSettings::load();
         let mut content_view = ContentView::default();
         
-        // Try to load schema
-        // ... (lines omitted for brevity, keeping existing logic)
+
         let app_data_dir = crate::settings::AppSettings::get_app_data_dir();
         let default_schema_path = app_data_dir.join("schema.min.json");
         let default_schema_path_str = default_schema_path.to_string_lossy().to_string();
@@ -74,10 +73,10 @@ impl ExplorerApp {
              println!("Failed to read schema.min.json at {}", schema_path);
         }
 
-        // Initialize CDN Loader with configured patch version
+
         let patch_ver = settings.poe2_patch_version.as_str();
         
-        // Use cache dir inside app data
+
         let cache_root = app_data_dir.join("cache");
         if !cache_root.exists() {
             let _ = std::fs::create_dir_all(&cache_root);
@@ -105,7 +104,7 @@ impl ExplorerApp {
             update_state: crate::update::UpdateState::new(),
         };
 
-        // Auto-load if path exists
+
         if let Some(path) = &app.settings.ggpk_path {
             let p = std::path::PathBuf::from(path);
             if p.exists() {
@@ -151,7 +150,7 @@ impl ExplorerApp {
                     let mut extra_status = String::new();
                     let mut found_bundle_index = false;
 
-                    // 1. Try to load from cache
+
                     let cache_path = crate::settings::AppSettings::get_app_data_dir().join("bundles2.cache");
                     let mut loaded_from_cache = false;
 
@@ -169,12 +168,12 @@ impl ExplorerApp {
                              },
                              Err(e) => {
                                  eprintln!("Failed to load cache: {}", e);
-                                 // If cache is bad, we will fall through to re-parsing
+
                              }
                          }
                     }
 
-                    // 2. If not cached, parse from Bundles/Index
+
                     if !loaded_from_cache {
                         let start_scan = std::time::Instant::now();
                         eprintln!("Cache missing or invalid. Parsing Bundles2/_.index.bin...");
@@ -194,7 +193,7 @@ impl ExplorerApp {
                                                             Ok(index) => {
                                                                 println!("Bundle Index parsing took {:?}", start_scan.elapsed());
                                                                 
-                                                                // Save to cache
+
                                                                 eprintln!("Saving Index to cache...");
                                                                 if let Err(e) = index.save_to_cache(cache_path) {
                                                                     println!("Failed to save cache: {}", e);
@@ -343,7 +342,7 @@ impl eframe::App for ExplorerApp {
             });
         });
 
-        // Export Window and Logic
+
         let _ = self.export_window.show(ctx);
         if self.export_window.confirmed {
              self.export_window.confirmed = false;
@@ -373,17 +372,17 @@ impl eframe::App for ExplorerApp {
                                          
                                          let mut raw_bundle_data = None;
                                          
-                                         // 1. Try GGPK
+
                                          if let Ok(Some(file_record)) = reader_clone.read_file_by_path(&bundle_path) {
                                              if let Ok(data) = reader_clone.get_data_slice(file_record.data_offset, file_record.data_length) {
                                                  raw_bundle_data = Some(data.to_vec());
                                              }
                                          }
                                          
-                                         // 2. Try CDN
+
                                          if raw_bundle_data.is_none() {
                                               if let Some(cdn) = &cdn_loader {
-                                                  // Construct fetch name (ensure .bundle.bin)
+
                                                   let fetch_name = if bundle_info.name.ends_with(".bundle.bin") {
                                                       bundle_info.name.clone()
                                                   } else {
@@ -413,7 +412,7 @@ impl eframe::App for ExplorerApp {
                                                              
                                                              use crate::ui::export_window::{TextureFormat, AudioFormat, DataFormat};
                                                              
-                                                             // Texture
+
                                                              if file_info.path.ends_with(".dds") {
                                                                  match settings.texture_format {
                                                                      TextureFormat::WebP => {
@@ -453,7 +452,7 @@ impl eframe::App for ExplorerApp {
                                                                      }
                                                                  }
                                                              } 
-                                                             // Audio
+
                                                              else if file_info.path.ends_with(".ogg") { 
                                                                  match settings.audio_format {
                                                                      AudioFormat::Wav => {
@@ -484,7 +483,7 @@ impl eframe::App for ExplorerApp {
                                                                      }
                                                                  }
                                                              }
-                                                             // DAT
+
                                                              else if file_info.path.ends_with(".dat") || file_info.path.ends_with(".datc64") || file_info.path.ends_with(".datl") || file_info.path.ends_with(".datl64") {
                                                                  match settings.data_format {
                                                                      DataFormat::Json => {
@@ -537,7 +536,7 @@ impl eframe::App for ExplorerApp {
 
                                                                  }
                                                              }
-                                                             // PSG
+
                                                              else if file_info.path.ends_with(".psg") {
                                                                  use crate::ui::export_window::PsgFormat;
                                                                  match settings.psg_format {
@@ -667,10 +666,10 @@ impl eframe::App for ExplorerApp {
              }
         }
 
-        // Detect settings changes
+
         let old_patch_ver = self.settings.poe2_patch_version.clone();
         
-        // Pass schema_date to settings
+
         let schema_date = self.content_view.dat_viewer.schema_date.clone();
         self.settings_window.show(ctx, &mut self.settings, Some(&schema_date));
         
@@ -679,7 +678,7 @@ impl eframe::App for ExplorerApp {
              self.content_view.update_cdn_version(&self.settings.poe2_patch_version);
         }
 
-        // Poll Schema Update
+
         if let Some(rx) = &self.schema_update_rx {
              match rx.try_recv() {
                  Ok(Ok(text)) => {
@@ -687,7 +686,7 @@ impl eframe::App for ExplorerApp {
                      self.settings_window.schema_status_msg = Some("Updated!".to_string());
                      self.is_loading = false;
                      
-                     // Reload Schema
+
                      if let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) {
                           let created_at = value.get("createdAt")
                              .and_then(|v| v.as_i64())

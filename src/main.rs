@@ -6,23 +6,23 @@ mod ooz;
 pub mod bundles;
 mod ui;
 pub mod settings;
-pub mod cli; // New CLI module
+pub mod cli;
 pub mod update;
 
 fn main() -> eframe::Result<()> {
     env_logger::init();
     
-    // CLI Argument Handling
+
     let args: Vec<String> = std::env::args().collect();
     if args.len() > 1 && args[1] == "inspect" {
-        // Run inspection tool
+
         if let Err(e) = cli::run_inspect() {
             eprintln!("Inspection failed: {}", e);
         }
         return Ok(());
     }
 
-    // Normal GUI App
+
     ui::run()
 }
 

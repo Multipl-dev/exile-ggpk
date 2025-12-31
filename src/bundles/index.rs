@@ -36,7 +36,7 @@ impl Index {
     pub fn read(data: &[u8]) -> io::Result<Self> {
         let mut cursor = Cursor::new(data);
         
-        // Read Bundle Count
+
         let bundle_count = read_i32(&mut cursor)?;
         let mut bundles = Vec::with_capacity(bundle_count as usize);
         
@@ -65,7 +65,7 @@ impl Index {
                 bundle_index, 
                 file_offset, 
                 file_size,
-                path: String::new(), // To be filled
+                path: String::new(),
             });
         }
         
@@ -84,7 +84,7 @@ impl Index {
         let current_pos = cursor.position() as usize;
         let directory_bundle_data = &data[current_pos..];
         
-        // Parse Paths
+
         let mut dir_cursor = Cursor::new(directory_bundle_data);
         if let Ok(bundle) = crate::bundles::bundle::Bundle::read_header(&mut dir_cursor) {
              if let Ok(dir_data) = bundle.decompress(&mut dir_cursor) {
@@ -119,77 +119,7 @@ impl Index {
     fn parse_paths(directories: &[DirectoryInfo], dir_data: &[u8], files: &mut HashMap<u64, FileInfo>) {
         if dir_data.is_empty() { return; }
 
-        for d in directories {
-            if d.offset as usize >= dir_data.len() { continue; }
-            
-            let start = d.offset as usize;
-            let end = start + d.size as usize;
-            if end > dir_data.len() { continue; }
-            
-            let chunk = &dir_data[start..end];
-            let mut ptr = 0;
-            
-            // Path stack for reconstruction
-            let _paths: Vec<Vec<u8>> = Vec::new(); // UNUSED
-            let _ = _paths;
-            let mut is_directory_phase = true; // First phase is directories (base paths), second is files
 
-            // Read loop
-            while ptr < chunk.len() {
-                if chunk.len() - ptr < 4 { break; }
-                let length_val = LittleEndian::read_u32(&chunk[ptr..ptr+4]);
-                ptr += 4;
-
-                if length_val == 0 {
-                    // Switch phase
-                    is_directory_phase = !is_directory_phase;
-                    if is_directory_phase {
-                        // Reset stack if we switch back to dir phase? 
-                        // Actually LibBundle3 clears it on phase switch FROM 0?
-                        // "index == 0" -> Toggle Base. If Base -> Clear().
-                        // So if we hit 0, we toggle `base`. If `base` becomes true, we clear.
-                        // Here `is_directory_phase` acts as `base`.
-                        // Initially `base = false` in LibBundle3.
-                        // Wait, let's trace carefully:
-                        // bool base = false;
-                        // while (...) { int index = Read(); if (index == 0) { base = !base; if (base) temp.Clear(); } ... }
-                    }
-                    // Wait, implementing EXACTLY as LibBundle3 describes logic:
-                    // int index = ReadInt();
-                    // if (index == 0) { base = !base; if (base) temp.Clear(); continue; }
-                    
-                    // But here we read length_val? No, it's an index/length combo.
-                    // Actually, the format is run-length encoded somewhat.
-                    // The value read IS the 'index'.
-                    
-                    // Re-implementing strictly based on findings:
-                    // The "0" marker acts as a delimiter between sections.
-                    
-                    // Let's retry the exact logic within this block:
-                    continue; 
-                }
-                
-                // It was NOT 0, so it's a valid entry.
-                // In previous code we treated it as index.
-                // Let's follow the previous logic structure but correct the stack handling.
-                let _index = length_val as usize; // It's actually index - 1 in logic usually?
-    
-                 // It seems the loop structure in my previous Replace was better but buggy.
-                 // Let's restart the loop logic completely using `continue` approach.
-            }
-        }
-        
-        // RE-WRITING THE ENTIRE METHOD CAREFULLY
-        // Based on LibGGPK3 / PyPoE / open source references for Bundle Index.
-        // It seems to be:
-        // [Index] [StringZero]
-        // If Index == 0: Toggle 'Base' mode. If Base is now true, Clear TempStack.
-        // If Index != 0: 
-        //    Offset = Index - 1
-        //    Str = ReadString()
-        //    NewPath = (Offset < TempStack.Count) ? TempStack[Offset] + Str : Str
-        //    If Base: TempStack.Add(NewPath)
-        //    Else: Hash(NewPath) -> Add to Files
             
         for d in directories {
             if d.offset as usize >= dir_data.len() { continue; }
@@ -268,8 +198,8 @@ impl Index {
                     let hash_fnv = fnv1a64(&full_path_bytes);
                     let hash_fnv_lower = fnv1a64(&lower_bytes);
 
-                    // Refactored Helper to assign path
-                    // Refactored Helper to assign path
+
+
                     if let Some(f) = files.get_mut(&hash_murmur) { f.path = String::from_utf8_lossy(&full_path_bytes).to_string(); }
                     else if let Some(f) = files.get_mut(&hash_murmur_lower) { f.path = String::from_utf8_lossy(&full_path_bytes).to_string(); }
                     else if let Some(f) = files.get_mut(&hash_fnv) { f.path = String::from_utf8_lossy(&full_path_bytes).to_string(); }

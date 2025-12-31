@@ -15,19 +15,19 @@ impl GgpkReader {
         let file = File::open(path)?;
         let mmap = unsafe { Mmap::map(&file)? };
 
-        // Read root record
+
         if mmap.len() < 8 {
              return Err(io::Error::new(io::ErrorKind::InvalidData, "File too small"));
         }
         
-        // Check tag
+
         let header = RecordHeader::read(&mmap[0..8]);
         if header.tag != RecordTag::GGPK {
              return Err(io::Error::new(io::ErrorKind::InvalidData, "Invalid GGPK signature"));
         }
 
         let ggpk_rec = GgpkRecord::read(&mmap, 0)?;
-        // GgpkRecord has version field
+
         
         Ok(Self {
             mmap,
@@ -77,8 +77,7 @@ impl GgpkReader {
 
     #[allow(dead_code)]
     pub fn is_poe2_heuristic(&self) -> bool {
-        // Basic heuristic: Check if "Data" -> "Balance" exists.
-        // This is typical for PoE 2.
+
         
         let root = match self.read_directory(self.root_offset) {
             Ok(r) => r,
@@ -94,7 +93,7 @@ impl GgpkReader {
                              for child in dir.entries {
                                  if let Ok(child_header) = self.read_record_header(child.offset) {
                                      if child_header.tag == RecordTag::PDIR {
-                                         // We only need name here, maybe optimize?
+
                                          if let Ok(child_dir) = self.read_directory(child.offset) {
                                              if child_dir.name == "Balance" {
                                                  return true;
@@ -103,7 +102,7 @@ impl GgpkReader {
                                      }
                                  }
                              }
-                             return false; // Found Data but no Balance
+                             return false;
                          }
                      }
                  }
@@ -173,7 +172,7 @@ impl GgpkReader {
          let parts: Vec<&str> = path.split('/').collect();
          let mut current_offset = self.root_offset;
          
-         // Navigate to the directory
+
          for part in parts {
              if part.is_empty() { continue; }
              let dir = self.read_directory(current_offset)?;
@@ -195,7 +194,7 @@ impl GgpkReader {
              }
          }
          
-         // List contents (Files AND Directories)
+
          let dir = self.read_directory(current_offset)?;
          let mut entries = Vec::new();
          for entry in dir.entries {

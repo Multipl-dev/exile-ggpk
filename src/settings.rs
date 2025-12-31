@@ -36,8 +36,7 @@ use std::path::PathBuf;
 
 impl AppSettings {
     pub fn get_app_data_dir() -> PathBuf {
-        // Try standard APPDATA on Windows, or HOME/.config on Linux
-        // For simplicity in this tool, we can try typical env vars
+
         if let Ok(app_data) = std::env::var("APPDATA") {
             let path = PathBuf::from(app_data).join("ggpk-explorer");
             if !path.exists() {
@@ -46,7 +45,7 @@ impl AppSettings {
             return path;
         }
         
-        // Fallback to local execution directory
+
         PathBuf::from(".")
     }
 

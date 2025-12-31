@@ -9,7 +9,7 @@ pub enum TextureFormat {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum AudioFormat {
-    Original, // Usually OGG
+    Original,
     Wav,
 }
 
@@ -78,8 +78,7 @@ impl ExportWindow {
         self.confirmed = false;
         self.target_name = name.to_string();
         self.is_folder = is_folder;
-        // Reset settings to default on new open? Or keep persistence?
-        // Keep persistence but reset recursive if it's a file
+
         if !is_folder {
             self.settings.recursive = false;
         } else {
@@ -105,7 +104,7 @@ impl ExportWindow {
                 
                 let is_dds = self.target_name.ends_with(".dds");
                 let is_ogg = self.target_name.ends_with(".ogg");
-                let is_dat = self.target_name.contains(".dat"); // Covers .dat, .dat64, etc
+                let is_dat = self.target_name.contains(".dat");
                 
                 let show_all = self.is_folder;
                 
@@ -152,7 +151,7 @@ impl ExportWindow {
                     ui.add_space(8.0);
                 }
                 
-                // If unknown file type, show simple Confirmation
+
                 if !show_all && !is_dds && !is_ogg && !is_dat && !self.target_name.ends_with(".psg") {
                      ui.label("Ready to export file.");
                      ui.add_space(8.0);

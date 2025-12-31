@@ -42,7 +42,7 @@ pub fn run_inspect() -> Result<(), Box<dyn std::error::Error>> {
     
     println!("--- GGPK INSPECTOR ---");
     
-    // Validate Index
+
     if let Ok(Some(index_file_record)) = reader.read_file_by_path("Bundles2/_.index.bin") {
         println!("Found Bundles2/_.index.bin");
         let data = reader.get_data_slice(index_file_record.data_offset, index_file_record.data_length)?;
@@ -64,7 +64,7 @@ pub fn run_inspect() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     
-    // List Top-Level Dir for context
+
     if let Ok(entries) = reader.list_files_in_directory("Bundles2") {
         println!("Bundles2 Children: {:?}", entries);
     }
