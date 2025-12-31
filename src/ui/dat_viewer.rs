@@ -236,7 +236,7 @@ impl DatViewer {
 
 
 
-    fn export_json(&self, table: &crate::dat::schema::Table) {
+    fn _export_json(&self, table: &crate::dat::schema::Table) {
         if let Some(reader) = &self.reader {
              if let Some(path) = rfd::FileDialog::new().set_file_name(format!("{}.json", table.name)).save_file() {
                  let mut all_rows = Vec::new();

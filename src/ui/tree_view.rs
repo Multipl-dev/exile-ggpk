@@ -3,13 +3,49 @@ use eframe::egui;
 use crate::bundles::index::Index;
 use crate::ggpk::reader::GgpkReader;
 use std::collections::HashMap;
+use std::sync::mpsc::{channel, Sender, Receiver};
+use std::thread;
 
 pub struct TreeView {
     reader: Option<Arc<GgpkReader>>,
     bundle_root: Option<BundleNode>,
+    search_term: String,
+    active_search_term: String,
+    search_index: Option<Arc<SearchIndex>>,
+    // Use Vec<bool> for dense lookup (faster than HashSet)
+    // (matches, has_descendants, count, generation)
+    search_tx: Option<Sender<(Vec<bool>, Vec<bool>, usize, u64)>>, 
+    search_rx: Option<Receiver<(Vec<bool>, Vec<bool>, usize, u64)>>,
+    matched_results: Vec<bool>, 
+    matched_descendants: Vec<bool>,
+    match_count: usize,
+    is_searching: bool,
+    search_generation: u64,
+    search_category: SearchCategory,
+    // Display State
+    render_limit: std::cell::Cell<usize>,
+}
+
+#[derive(PartialEq, Clone, Copy, Debug)]
+pub enum SearchCategory {
+    All,
+    Texture, // .dds, .png
+    Audio,   // .ogg, .wem
+    Text,    // .txt, .sh, .hlsl
+    Data,    // .dat*
+}
+
+struct SearchIndex {
+    // files: (id, lowercase_name)
+    files: Vec<(usize, String)>,
+    // parents: index = child_id, value = parent_id. 
+    // Root has parent = usize::MAX or self.
+    parents: Vec<usize>, 
+    max_id: usize,
 }
 
 struct BundleNode {
+    id: usize,
     name: String,
     children: HashMap<String, BundleNode>,
     file_hash: Option<u64>,
@@ -17,65 +53,279 @@ struct BundleNode {
 
 impl Default for TreeView {
     fn default() -> Self {
-        Self { reader: None, bundle_root: None }
+        Self { 
+            reader: None, 
+            bundle_root: None, 
+            search_term: String::new(), 
+            active_search_term: String::new(),
+            search_index: None,
+            search_tx: None,
+            search_rx: None,
+            matched_results: Vec::new(),
+            matched_descendants: Vec::new(),
+            match_count: 0,
+            is_searching: false,
+            search_generation: 0,
+            search_category: SearchCategory::All,
+            render_limit: std::cell::Cell::new(2000),
+        }
     }
 }
 
 pub enum TreeViewAction {
     None,
     Select,
-    RequestExport { hashes: Vec<u64>, name: String, is_folder: bool },
+    RequestExport { hashes: Vec<u64>, name: String, is_folder: bool, settings: Option<crate::ui::export_window::ExportSettings> },
 }
 
 impl TreeView {
+    pub fn is_searching(&self) -> bool {
+        self.is_searching
+    }
+
     pub fn new(reader: Arc<GgpkReader>) -> Self {
-        Self { reader: Some(reader), bundle_root: None }
+        Self { 
+            reader: Some(reader), 
+            bundle_root: None, 
+            search_term: String::new(), 
+            active_search_term: String::new(),
+            search_index: None,
+            search_tx: None,
+            search_rx: None,
+            matched_results: Vec::new(),
+            matched_descendants: Vec::new(),
+            match_count: 0,
+            is_searching: false,
+            search_generation: 0,
+            search_category: SearchCategory::All,
+            render_limit: std::cell::Cell::new(2000),
+        }
     }
 
     pub fn new_bundled(reader: Arc<GgpkReader>, index: &Index) -> Self {
-        let root = Self::build_bundle_tree(index);
-        Self { reader: Some(reader), bundle_root: Some(root) }
+        let (root, search_index) = Self::build_bundle_tree(index);
+        let (tx, rx) = channel();
+        
+        Self { 
+            reader: Some(reader), 
+            bundle_root: Some(root), 
+            search_term: String::new(), 
+            active_search_term: String::new(),
+            search_index: Some(Arc::new(search_index)),
+            search_tx: Some(tx), 
+            search_rx: Some(rx),
+            matched_results: Vec::new(),
+            matched_descendants: Vec::new(),
+            match_count: 0,
+            is_searching: false,
+            search_generation: 0,
+            search_category: SearchCategory::All,
+            render_limit: std::cell::Cell::new(2000),
+        }
     }
 
-    fn build_bundle_tree(index: &Index) -> BundleNode {
+    fn build_bundle_tree(index: &Index) -> (BundleNode, SearchIndex) {
         let mut root = BundleNode {
+            id: 0,
             name: "Bundles".to_string(),
             children: HashMap::new(),
             file_hash: None,
         };
         
-        for (hash, file) in &index.files {
-            if file.path.is_empty() { continue; }
-            
-            let parts: Vec<&str> = file.path.split(|c| c == '/' || c == '\\').collect();
+        let mut next_id = 1;
+        let mut files = Vec::new();
+
+        // Map child_id -> parent_id for rapid propagation
+        let mut parent_map = Vec::new(); 
+        parent_map.push((0, 0)); // Root parent is self
+
+        for (hash, info) in &index.files {
+            let parts: Vec<&str> = info.path.split('/').collect();
             let mut current = &mut root;
             
             for (i, part) in parts.iter().enumerate() {
-                if i == parts.len() - 1 {
-                    // File
-                    current.children.insert(part.to_string(), BundleNode {
-                        name: part.to_string(),
-                        children: HashMap::new(),
-                        file_hash: Some(*hash),
+                if part.is_empty() { continue; }
+                
+                let is_file = i == parts.len() - 1;
+                let parent_id = current.id;
+                
+                if is_file {
+                    current.children.entry(part.to_string()).or_insert_with(|| {
+                        let node = BundleNode {
+                            id: next_id,
+                            name: part.to_string(),
+                            children: HashMap::new(),
+                            file_hash: Some(*hash), // Store hash
+                        };
+                        files.push((next_id, part.to_lowercase()));
+                        parent_map.push((next_id, parent_id));
+                        next_id += 1;
+                        node
                     });
                 } else {
                     // Directory
-                    current = current.children.entry(part.to_string()).or_insert_with(|| BundleNode {
-                        name: part.to_string(),
-                        children: HashMap::new(),
-                        file_hash: None,
+                    current = current.children.entry(part.to_string()).or_insert_with(|| {
+                        let node = BundleNode {
+                            id: next_id,
+                            name: part.to_string(),
+                            children: HashMap::new(),
+                            file_hash: None,
+                        };
+                        files.push((next_id, part.to_lowercase()));
+                        parent_map.push((next_id, parent_id));
+                        next_id += 1;
+                        node
                     });
                 }
             }
         }
-        root
+
+        // Convert parent_map to dense Vec<usize>
+        let mut parents = vec![0; next_id];
+        for (child, parent) in parent_map {
+            if child < parents.len() {
+                parents[child] = parent;
+            }
+        }
+        
+        (root, SearchIndex { files, parents, max_id: next_id })
     }
     
     pub fn show(&mut self, ui: &mut egui::Ui, selected_file: &mut Option<crate::ui::app::FileSelection>, schema: Option<&crate::dat::schema::Schema>) -> TreeViewAction {
         let mut action = TreeViewAction::None;
+        let mut trigger_search = false;
+
+        ui.horizontal(|ui| {
+            ui.label("🔍");
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                 let is_committed = !self.search_term.is_empty() && self.search_term == self.active_search_term;
+                 
+                 // Type Filter
+                 egui::ComboBox::from_id_salt("search_filter")
+                     .selected_text(format!("{:?}", self.search_category))
+                     .show_ui(ui, |ui| {
+                         ui.selectable_value(&mut self.search_category, SearchCategory::All, "All");
+                         ui.selectable_value(&mut self.search_category, SearchCategory::Texture, "Texture");
+                         ui.selectable_value(&mut self.search_category, SearchCategory::Audio, "Audio");
+                         ui.selectable_value(&mut self.search_category, SearchCategory::Text, "Text");
+                         ui.selectable_value(&mut self.search_category, SearchCategory::Data, "Data");
+                     });
+
+
+                 if is_committed {
+                     if ui.button("Clear").clicked() {
+                         self.search_term.clear();
+                         trigger_search = true;
+                     }
+                 } else {
+                     if ui.add_enabled(!self.search_term.is_empty(), egui::Button::new("Search")).clicked() {
+                         trigger_search = true;
+                     }
+                 }
+                 
+                 // Text edit fills remaining space
+                 let response = ui.add_sized(ui.available_size(), egui::TextEdit::singleline(&mut self.search_term).id(ui.make_persistent_id("search_box")));
+                 if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                     trigger_search = true;
+                 }
+            });
+        });
+        ui.separator();
+        
+        // Poll for results
+        if let Some(rx) = &self.search_rx {
+            if let Ok((results, descendants, count, gen)) = rx.try_recv() {
+                if gen == self.search_generation {
+                    self.matched_results = results;
+                    self.matched_descendants = descendants;
+                    self.match_count = count;
+                    self.is_searching = false;
+                }
+                // If gen != self.search_generation, it's an old result, ignore it.
+            }
+        }
+
+        if trigger_search {
+             self.active_search_term = self.search_term.clone();
+             let term_lower = self.active_search_term.to_lowercase();
+             self.search_generation += 1;
+             
+             // Clear previous results immediately to prevent ghosts
+             self.matched_results.clear();
+             // Don't clear results immediately to avoid flicker. 
+             // Logic relies on search_generation to discard stale results.
+             
+             // Reset limit on new search
+             self.render_limit.set(2000);
+
+             if term_lower.is_empty() {
+                 
+             } else {
+                 if let Some(index) = &self.search_index {
+                     if let Some(tx) = &self.search_tx {
+                         let tx = tx.clone();
+                         let index = index.clone();
+                         let gen_id = self.search_generation;
+                         let category = self.search_category;
+                         
+                         self.is_searching = true;
+                         
+                         let start_time = std::time::Instant::now();
+                         println!("Starting Search '{}' (Gen {})", self.active_search_term, gen_id);
+                         
+                         thread::spawn(move || {
+                             let max_id = index.max_id;
+                             // 1. Find exact matches
+                             let mut results = vec![false; max_id];
+                             let mut count = 0;
+                             
+                             for (id, name_lower) in &index.files {
+                                 if name_lower.contains(&term_lower) {
+                                     // Check Category
+                                     let is_match = match category {
+                                         SearchCategory::All => true,
+                                         SearchCategory::Texture => name_lower.ends_with(".dds") || name_lower.ends_with(".png"),
+                                         SearchCategory::Audio => name_lower.ends_with(".ogg") || name_lower.ends_with(".wem") || name_lower.ends_with(".wav"),
+                                         SearchCategory::Text => name_lower.ends_with(".txt") || name_lower.ends_with(".sh") || name_lower.ends_with(".hlsl") || name_lower.ends_with(".vshader") || name_lower.ends_with(".pshader"),
+                                         SearchCategory::Data => name_lower.starts_with("data/") || name_lower.ends_with(".dat") || name_lower.ends_with(".datc64") || name_lower.ends_with(".datl") || name_lower.ends_with(".datl64"),
+                                     };
+
+                                     if is_match {
+                                         if *id < results.len() {
+                                             results[*id] = true;
+                                             count += 1;
+                                         }
+                                     }
+                                 }
+                             }
+                             
+                             // 2. Propagate matches (Vectorized)
+                             let mut descendants = vec![false; max_id];
+                             
+                             for id in (1..max_id).rev() {
+                                 let is_match = results[id];
+                                 let has_desc = descendants[id];
+                                 
+                                 if is_match || has_desc {
+                                     // Propagate to parent
+                                     let parent_id = index.parents[id];
+                                     if parent_id < descendants.len() { // Root parent 0 is ok
+                                          descendants[parent_id] = true;
+                                     }
+                                 }
+                             }
+
+                             println!("Search Finished (Gen {}) in {:?}. Found {} matches.", gen_id, start_time.elapsed(), count);
+                             let _ = tx.send((results, descendants, count, gen_id));
+                         });
+                     }
+                 }
+             }
+        }
         
         if let Some(root) = &self.bundle_root {
-            self.render_bundle_node(ui, root, selected_file, &mut action, schema);
+            let mut render_count = 0;
+            self.render_bundle_node(ui, root, selected_file, &mut action, schema, &mut render_count);
         } else if let Some(reader) = &self.reader {
             let root_offset = reader.root_offset;
             self.render_directory(ui, reader, root_offset, "Root", selected_file, schema);
@@ -84,7 +334,37 @@ impl TreeView {
         action
     }
 
-    fn render_bundle_node(&self, ui: &mut egui::Ui, node: &BundleNode, selected_file: &mut Option<crate::ui::app::FileSelection>, action: &mut TreeViewAction, schema: Option<&crate::dat::schema::Schema>) {
+    fn render_bundle_node(&self, ui: &mut egui::Ui, node: &BundleNode, selected_file: &mut Option<crate::ui::app::FileSelection>, action: &mut TreeViewAction, schema: Option<&crate::dat::schema::Schema>, render_count: &mut usize) {
+        if *render_count > 2000 {
+            ui.label(egui::RichText::new("... Truncated (Too many items) ...").color(egui::Color32::YELLOW));
+            return;
+        }
+        *render_count += 1;
+
+        if !self.active_search_term.is_empty() {
+            // Check flags using ID
+            let id = node.id;
+            // Bounds check slightly needed if vectors are empty/cleared
+            // If searching but results cleared -> return false (hide content until ready)
+            let matches = if id < self.matched_results.len() { 
+                self.matched_results[id] 
+            } else { 
+                self.active_search_term.is_empty() 
+            };
+            let has_matching_children = if id < self.matched_descendants.len() { 
+                self.matched_descendants[id] 
+            } else { 
+                self.active_search_term.is_empty() 
+            };
+            
+            if !matches && !has_matching_children {
+                return;
+            }
+            
+        }
+        
+        let use_filter_expand = !self.active_search_term.is_empty() && self.match_count < 500;
+
         if let Some(hash) = node.file_hash {
             let mut label = egui::RichText::new(&node.name);
             
@@ -111,38 +391,68 @@ impl TreeView {
                 }
                 response.context_menu(|ui| {
                     if ui.button("Export...").clicked() {
-                        *action = TreeViewAction::RequestExport { hashes: vec![hash], name: node.name.clone(), is_folder: false };
+                        *action = TreeViewAction::RequestExport { hashes: vec![hash], name: node.name.clone(), is_folder: false, settings: None };
                         ui.close_menu();
                     }
                 });
             });
         } else {
-            let id = ui.make_persistent_id(&node.name).with(&node.children.len()); 
-            let header = egui::CollapsingHeader::new(&node.name)
-                .id_salt(id);
-                
-                let response = header.show(ui, |ui| {
-                    let mut children: Vec<&BundleNode> = node.children.values().collect();
-                    children.sort_by(|a, b| {
-                        let a_is_dir = a.file_hash.is_none();
-                        let b_is_dir = b.file_hash.is_none();
-                        if a_is_dir != b_is_dir {
-                            b_is_dir.cmp(&a_is_dir) // True (Dir) > False (File)
-                        } else {
-                            a.name.cmp(&b.name)
-                        }
-                    });
+            let mut id = ui.make_persistent_id(&node.name).with(&node.children.len());
+            if use_filter_expand {
+                id = id.with("filtered");
+            }
 
-                    for child in children {
-                        self.render_bundle_node(ui, child, selected_file, action, schema);
-                    }
+            // Directory
+            // Collect children to sort them? 
+            let mut children: Vec<&BundleNode> = node.children.values().collect();
+            children.sort_by(|a, b| {
+                // Directories first, then files
+                let a_is_dir = !a.children.is_empty();
+                let b_is_dir = !b.children.is_empty();
+                if a_is_dir == b_is_dir {
+                    a.name.cmp(&b.name)
+                } else {
+                    b_is_dir.cmp(&a_is_dir)
+                }
+            });
+
+            // Determine Open State
+            // Always auto-expand search results. 
+            // The render_count cap (2000) prevents hangs.
+            let open_state = if !self.active_search_term.is_empty() {
+                 Some(true)
+            } else {
+                 None
+            };
+            
+            let response = egui::CollapsingHeader::new(&node.name)
+                .id_salt(id)
+                .open(open_state)
+                .show(ui, |ui| {
+                     let mut skipped_count = 0;
+                     for child in children {
+                         if *render_count >= self.render_limit.get() {
+                             skipped_count += 1;
+                             continue;
+                         }
+                         self.render_bundle_node(ui, child, selected_file, action, schema, render_count);
+                     }
+                     
+                     if skipped_count > 0 {
+                         ui.horizontal(|ui| {
+                             ui.label(format!("... {} items hidden", skipped_count));
+                             if ui.button("Load More (+2000)").clicked() {
+                                 self.render_limit.set(self.render_limit.get() + 2000);
+                             }
+                         });
+                     }
                 });
-                
+            
             response.header_response.context_menu(|ui| {
                 if ui.button("Export Folder...").clicked() {
                     let mut hashes = Vec::new();
                     self.collect_hashes(node, &mut hashes);
-                    *action = TreeViewAction::RequestExport { hashes, name: node.name.clone(), is_folder: true };
+                    *action = TreeViewAction::RequestExport { hashes, name: node.name.clone(), is_folder: true, settings: None };
                     ui.close_menu();
                 }
             });
@@ -157,6 +467,7 @@ impl TreeView {
             self.collect_hashes(child, hashes);
         }
     }
+
 
     fn render_directory(&self, ui: &mut egui::Ui, reader: &GgpkReader, offset: u64, name: &str, selected_file: &mut Option<crate::ui::app::FileSelection>, schema: Option<&crate::dat::schema::Schema>) {
         let id = ui.make_persistent_id(offset);
@@ -175,18 +486,7 @@ impl TreeView {
                              }
                         }
                         
-                        // Sort: PDIR first, then Name (we don't have name handy easily without reading record? Wait, file name is in file record...)
-                        // PDIR name is in PDIR record.
-                        // We can sort by TAG primarily. PDIR < FILE?
-                        // If we want alphabetical within type, we need to read the full record.
-                        // Let's settle for Type sorting first to match user request "Directories should always be first".
-                        // Sorting by name within type is implicit if the directory list was already sorted?
-                        // GGPK entries might be hash ordered.
-                        // To sort by name, we'd need to read the names.
-                        
-                        // For now, let's sort by TAG: PDIR (Dir) < FILE (File).
-                        // RecordTag enum usually has PDIR=... FILE=...
-                        // Let's assume we want PDIR first.
+                        // Sort: Directories (PDIR) first, then by internal order (Offset)
                         valid_entries.sort_by(|a, b| {
                             let tag_a = a.1.tag;
                             let tag_b = b.1.tag;
@@ -243,27 +543,10 @@ impl TreeView {
                         }
                     },
                     Err(e) => {
-                         // Different error handling in original? "Err(_) => {" vs "Err(e) => {"
-                         // Original line 220: "Err(_) => {"
-                         // NO, I read "Err(_) => { ui.label... }" at line 220. 
-                         // Check line 220 in viewed file 1293.
-                         // Line 220: "Err(_) => {"
-                         // Wait, I am replacing lines 151 to 214?
-                         // Line 214 corresponds to `Err(_) => { ui.label("<Read Error>"); }` inside FILE match.
-                         // Line 220 is the error arm for `read_directory`.
-                         // I am NOT replacing line 220.
-                         // My replacement content ends with closing brace for FILE match `}`.
-                         // And then `_ => {}` and `}` loop end. 
-                         // My replacement content is FULL function body?
-                         // No, my replacement starts at line 151 (function signature).
-                         // Ends at line 214?
-                         // Wait, `read_directory` has nested match.
-                         // The structure is large.
-                         // I should replace the WHOLE function.
-                         // I need to see where the function ends.
                          ui.label(format!("Error reading directory: {}", e));
                     }
                 }
             });
     }
 }
+

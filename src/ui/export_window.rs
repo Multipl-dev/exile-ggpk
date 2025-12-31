@@ -17,7 +17,12 @@ pub enum AudioFormat {
 pub enum DataFormat {
     Original,
     Json,
+}
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum PsgFormat {
+    Original,
+    Json,
 }
 
 #[derive(Clone)]
@@ -25,6 +30,7 @@ pub struct ExportSettings {
     pub texture_format: TextureFormat,
     pub audio_format: AudioFormat,
     pub data_format: DataFormat,
+    pub psg_format: PsgFormat,
     pub recursive: bool,
 }
 
@@ -34,6 +40,7 @@ impl Default for ExportSettings {
             texture_format: TextureFormat::OriginalDds,
             audio_format: AudioFormat::Original,
             data_format: DataFormat::Original,
+            psg_format: PsgFormat::Original,
             recursive: true,
         }
     }
@@ -130,6 +137,15 @@ impl ExportWindow {
                      ui.add_space(8.0);
                 }
 
+                if show_all || self.target_name.ends_with(".psg") {
+                    ui.heading("PSG Options");
+                    ui.horizontal(|ui| {
+                        ui.radio_value(&mut self.settings.psg_format, PsgFormat::Original, "Original");
+                        ui.radio_value(&mut self.settings.psg_format, PsgFormat::Json, "Convert to JSON");
+                    });
+                     ui.add_space(8.0);
+                }
+
                 if self.is_folder {
                     ui.separator();
                     ui.checkbox(&mut self.settings.recursive, "Recursive Export (Include subfolders)");
@@ -137,7 +153,7 @@ impl ExportWindow {
                 }
                 
                 // If unknown file type, show simple Confirmation
-                if !show_all && !is_dds && !is_ogg && !is_dat {
+                if !show_all && !is_dds && !is_ogg && !is_dat && !self.target_name.ends_with(".psg") {
                      ui.label("Ready to export file.");
                      ui.add_space(8.0);
                 }

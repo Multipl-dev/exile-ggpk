@@ -9,10 +9,16 @@ use crate::ggpk::reader::GgpkReader;
 use std::collections::HashMap;
 
 use crate::ui::dat_viewer::DatViewer;
+use crate::dat::csd::{self};
+use crate::dat::psg::{self};
+use crate::ui::json_viewer::JsonTreeViewer;
 
 pub struct ContentView {
     texture_cache: HashMap<u64, egui::TextureHandle>,
     raw_data_cache: HashMap<u64, Vec<u8>>,
+    pub csd_cache: HashMap<u64, csd::CsdFile>,
+    pub csd_language_filter: Option<String>,
+    pub json_cache: HashMap<u64, serde_json::Value>,
     pub dat_viewer: DatViewer,
     // rodio::OutputStream does not implement Default, so we can't derive it.
     // We also can't easily store OutputStream in a struct that needs to be Default/Clone usually, 
@@ -27,7 +33,7 @@ pub struct ContentView {
     pub audio_volume: f32,
     
     // (hashes, name_for_title)
-    pub export_requested: Option<(Vec<u64>, String)>,
+    pub export_requested: Option<(Vec<u64>, String, Option<crate::ui::export_window::ExportSettings>)>,
 }
 
 impl Default for ContentView {
@@ -35,6 +41,9 @@ impl Default for ContentView {
         Self {
             texture_cache: HashMap::new(),
             raw_data_cache: HashMap::new(),
+            csd_cache: HashMap::new(),
+            csd_language_filter: Some("English".to_string()),
+            json_cache: HashMap::new(),
             dat_viewer: DatViewer::default(),
             audio_stream_handle: None,
             audio_sink: None,
@@ -87,8 +96,24 @@ impl ContentView {
                                  if self.dat_viewer.loaded_filename() != Some(file_info.path.as_str()) {
                                      perform_load = true;
                                  }
+                             } else if file_info.path.ends_with(".csd") {
+                                 if !self.csd_cache.contains_key(&hash) {
+                                     perform_load = true;
+                                 }
+                             } else if file_info.path.ends_with(".psg") {
+                                 if !self.json_cache.contains_key(&hash) {
+                                     perform_load = true;
+                                 }
+                             } else if file_info.path.ends_with(".json") {
+                                 if !self.json_cache.contains_key(&hash) {
+                                     perform_load = true;
+                                 }
                              } else if file_info.path.ends_with(".ogg") {
                                  // Audio auto load?
+                             } else if is_text_file(&file_info.path) {
+                                 if !self.raw_data_cache.contains_key(&hash) && file_info.file_size < 2 * 1024 * 1024 { // Auto load text < 2MB
+                                     perform_load = true;
+                                 }
                              } else {
                                  // For other files, auto load into raw cache for Hex View?
                                  if !self.raw_data_cache.contains_key(&hash) && file_info.file_size < 1024 * 1024 { // Only auto load small files < 1MB
@@ -105,7 +130,7 @@ impl ContentView {
                              let response = ui.label(label);
                              response.context_menu(|ui| {
                                  if ui.button("Export...").clicked() {
-                                     self.export_requested = Some((vec![hash], file_info.path.clone()));
+                                     self.export_requested = Some((vec![hash], file_info.path.clone(), None));
                                      ui.close_menu();
                                  }
                              });
@@ -134,6 +159,18 @@ impl ContentView {
                                       // Ensure it takes available space
                                       self.dat_viewer.show(ui, is_poe2);
                                   }
+                             } else if file_info.path.ends_with(".csd") {
+                                 self.show_csd(ui, hash);
+                             } else if file_info.path.ends_with(".json") || file_info.path.ends_with(".psg") {
+                                 if let Some(job) = self.json_cache.get(&hash) {
+                                     egui::ScrollArea::both().auto_shrink([false, false]).show(ui, |ui| {
+                                         JsonTreeViewer::show(ui, job);
+                                     });
+                                 } else if self.failed_loads.contains(&hash) {
+                                      ui.label(format!("Failed to load JSON. Error: {}", self.last_error.as_deref().unwrap_or("Unknown")));
+                                 } else {
+                                      ui.label("Loading JSON...");
+                                 }
                              } else {
                                  // For other content, use ScrollArea
                                       if file_info.path.ends_with(".dds") {
@@ -179,6 +216,36 @@ impl ContentView {
                                       } else if file_info.path.ends_with(".ogg") {
                                            egui::ScrollArea::vertical().show(ui, |ui| {
                                                 self.show_audio_player(ui, reader, index, file_info, hash);
+                                           });
+                                      } else if is_text_file(&file_info.path) {
+                                           egui::ScrollArea::vertical().show(ui, |ui| {
+                                                if let Some(data) = self.raw_data_cache.get(&hash) {
+                                                     let text = decode_text_with_detection(data);
+                                                      // Show read-only text edit
+                                                      let language = if file_info.path.ends_with(".hlsl") || file_info.path.ends_with(".vshader") || file_info.path.ends_with(".pshader") || file_info.path.ends_with(".fx") {
+                                                          "hlsl"
+                                                      } else {
+                                                          "text"
+                                                      };
+
+                                                      let theme = crate::ui::syntax::Theme::dark();
+                                                      let mut layouter = |ui: &egui::Ui, string: &str, _wrap_width: f32| {
+                                                          let mut layout_job = crate::ui::syntax::highlight(ui.ctx(), &theme, string, language);
+                                                          layout_job.wrap.max_width = f32::INFINITY; 
+                                                          ui.fonts(|f| f.layout_job(layout_job))
+                                                      };
+
+                                                      egui::ScrollArea::both().show(ui, |ui| {
+                                                          ui.add(egui::TextEdit::multiline(&mut text.as_str())
+                                                              .code_editor()
+                                                              .lock_focus(false)
+                                                              .desired_width(f32::INFINITY)
+                                                              .layouter(&mut layouter)
+                                                          );
+                                                      });
+                                                } else {
+                                                     ui.label("Loading text...");
+                                                }
                                            });
                                       } else {
                                           egui::ScrollArea::vertical().show(ui, |ui| {
@@ -312,11 +379,48 @@ impl ContentView {
             }
     }
 
-    fn load_bundled_content(&mut self, ctx: &egui::Context, reader: &GgpkReader, index: &Index, file_info: &crate::bundles::index::FileInfo, hash: u64) {
+    // Caching helpers
+    fn get_cache_path(hash: u64) -> std::path::PathBuf {
+        let mut path = std::env::temp_dir();
+        path.push("ggpk-explorer-cache");
+        let _ = std::fs::create_dir_all(&path);
+        path.push(format!("{:x}.bin", hash));
+        path
+    }
+
+    fn try_load_from_cache(&mut self, hash: u64) -> bool {
+        let path = Self::get_cache_path(hash);
+        if path.exists() {
+             if let Ok(file) = std::fs::File::open(&path) {
+                 if let Ok(value) = bincode::deserialize_from::<_, serde_json::Value>(std::io::BufReader::new(file)) {
+                     self.json_cache.insert(hash, value);
+                     return true;
+                 }
+             }
+        }
+        false
+    }
+
+    fn save_to_cache(hash: u64, value: &serde_json::Value) {
+        let path = Self::get_cache_path(hash);
+        if let Ok(file) = std::fs::File::create(&path) {
+            let _ = bincode::serialize_into(std::io::BufWriter::new(file), value);
+        }
+    }
+
+    pub fn load_bundled_content(&mut self, ctx: &egui::Context, reader: &GgpkReader, index: &crate::bundles::index::Index, file_info: &crate::bundles::index::FileInfo, hash: u64) {
          // Reset previous state
          self.dat_viewer.reader = None;
          self.dat_viewer.error_msg = None;
          self.last_error = None;
+
+         // Check persistent cache for JSON/PSG
+         if file_info.path.ends_with(".json") || file_info.path.ends_with(".psg") {
+             if self.try_load_from_cache(hash) {
+                 println!("Loaded {} from disk cache.", file_info.path);
+                 return;
+             }
+         }
 
          if let Some(bundle_info) = index.bundles.get(file_info.bundle_index as usize) {
              let mut raw_bundle_data: Option<Vec<u8>> = None;
@@ -394,6 +498,8 @@ impl ContentView {
                                       self.dat_viewer.load_from_bytes(file_data, path);
                                       if self.dat_viewer.reader.is_none() {
                                           self.last_error = Some(format!("Failed to parse DAT file: {}", self.dat_viewer.error_msg.as_deref().unwrap_or("Unknown error")));
+                                          // Prevent retry loop
+                                          self.failed_loads.insert(hash);
                                       } else {
                                           self.last_error = None;
                                       }
@@ -505,7 +611,65 @@ impl ContentView {
                                               self.last_error = Some("Failed to decode Audio (Might be Wwise WEM)".to_string());
                                           }
                                       }
-                                 }
+                                  } else if path.ends_with(".csd") {
+                                     println!("Loading CSD file: {}", path);
+                                     match csd::parse_csd(&file_data, path) {
+                                         Ok(csd_file) => {
+                                             println!("CSD parsed successfully: {} entries", csd_file.entries.len());
+                                             self.csd_cache.insert(hash, csd_file);
+                                             self.last_error = None;
+                                         },
+                                         Err(e) => {
+                                             println!("CSD Parse Error: {}", e);
+                                             self.last_error = Some(format!("CSD Parse Error: {}", e));
+                                             // Fallback to raw data?
+                                             self.raw_data_cache.insert(hash, file_data.clone());
+                                         }
+                                     }
+                                                                   } else if path.ends_with(".json") {
+                                      // println!("Loading JSON file: {}", path);
+                                      let json_str = decode_text_with_detection(&file_data);
+                                      match serde_json::from_str::<serde_json::Value>(&json_str) {
+                                          Ok(v) => {
+                                              Self::save_to_cache(hash, &v);
+                                              self.json_cache.insert(hash, v);
+                                              self.last_error = None;
+                                          },
+                                          Err(e) => {
+                                              self.last_error = Some(format!("Invalid JSON: {}", e));
+                                              // Fallback: Store raw string as a Value::String if possible
+                                              self.json_cache.insert(hash, serde_json::Value::String(json_str));
+                                          }
+                                      }
+                                  } else if path.ends_with(".psg") {
+                                      // println!("Loading PSG file: {}", path);
+                                      match psg::parse_psg(&file_data) {
+                                          Ok(psg_file) => {
+                                              // Convert PSG to Value
+                                              if let Ok(v) = serde_json::to_value(&psg_file) {
+                                                  Self::save_to_cache(hash, &v);
+                                                  self.json_cache.insert(hash, v);
+                                                  self.last_error = None;
+                                              } else {
+                                                   self.last_error = Some("Failed to serialize PSG".to_string());
+                                                   self.failed_loads.insert(hash);
+                                              }
+                                          },
+                                          Err(e) => {
+                                              // println!("PSG Parse Error: {}", e);
+                                              self.last_error = Some(format!("PSG Parse Error: {}", e));
+                                              self.raw_data_cache.insert(hash, file_data.clone());
+                                          }
+                                      }
+                                  } else if is_text_file(path) {
+                                      // Just store raw data, we decode on render
+                                      self.raw_data_cache.insert(hash, file_data);
+                                      self.last_error = None;
+                                  } else {
+                                      // Fallback for unknown files - cache raw data to stop re-loading
+                                      self.raw_data_cache.insert(hash, file_data);
+                                      self.last_error = None;
+                                  }
                              }},
                              Err(e) => {
                                  println!("Bundle decompression failed: {:?}", e);
@@ -522,9 +686,153 @@ impl ContentView {
                   }
               }
           }
+    }
+
+    fn show_csd(&mut self, ui: &mut egui::Ui, hash: u64) {
+        if let Some(csd_file) = self.csd_cache.get(&hash) {
+            egui::ScrollArea::both().show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button("Export JSON").clicked() {
+                           if let Some(path) = rfd::FileDialog::new()
+                               .set_file_name("csd_export.json")
+                               .save_file() 
+                           {
+                               if let Ok(file) = std::fs::File::create(path) {
+                                   let _ = serde_json::to_writer_pretty(file, csd_file);
+                               }
+                           }
+                        }
+                        
+                        ui.separator();
+                        
+                        egui::ComboBox::from_id_salt("csd_lang_filter")
+                            .selected_text(self.csd_language_filter.as_deref().unwrap_or("All"))
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(&mut self.csd_language_filter, None, "All");
+                                for lang in &csd_file.languages {
+                                    ui.selectable_value(&mut self.csd_language_filter, Some(lang.clone()), lang);
+                                }
+                            });
+                        ui.label("Language:");
+                    });
+                });
+                
+                ui.separator();
+                for (idx, entry) in csd_file.entries.iter().enumerate() {
+                    // Filter check: If ANY sub-entry matches filter, show the group?
+                    // Or show group but only matching sub-entries?
+                    // Usually we want to see the ID and then the translation.
+                    // If filter is set, we only show sub-entries matching.
+                    // If no sub-entries match, maybe hide the whole entry?
+                    
+                    let filtered_subs: Vec<_> = entry.descriptions.iter().filter(|sub| {
+                         match &self.csd_language_filter {
+                             None => true,
+                             Some(filter) => {
+                                 // If sub has no language, show it (defaults/params?)
+                                 // Or if it matches filter.
+                                 // Usually defaults have no language?
+                                 // In sample: `1 ...` then `lang ...` then `1 ...`
+                                 // If filter is English, show None and English.
+                                 // If filter is French, show French.
+                                 sub.language.as_ref().map(|l| l == filter).unwrap_or_else(|| filter == "English")
+                             }
+                         }
+                    }).collect();
+                    
+                    if filtered_subs.is_empty() {
+                        continue;
+                    }
+
+                    ui.group(|ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(format!("Entry #{}:", idx + 1));
+                            for id in &entry.ids {
+                                ui.code(id);
+                            }
+                        });
+                        
+                        ui.indent("descriptions", |ui| {
+                            for sub in filtered_subs {
+                                ui.horizontal(|ui| {
+                                    if sub.is_canonical {
+                                        ui.colored_label(egui::Color32::from_rgb(255, 215, 0), "★");
+                                    }
+                                    if let Some(lang) = &sub.language {
+                                        ui.monospace(format!("[{}]", lang));
+                                    }
+                                    ui.label(egui::RichText::new(&sub.operator).strong());
+                                    ui.label(&sub.description);
+                                });
+                                if !sub.parameters.is_empty() {
+                                    ui.horizontal(|ui| {
+                                        ui.label(egui::RichText::new("Params:").italics());
+                                        for param in &sub.parameters {
+                                            ui.monospace(format!("{}={}", param.name, param.value));
+                                        }
+                                    });
+                                }
+                            }
+                        });
+                    });
+                    ui.add_space(4.0);
+                }
+            });
+        } else if self.failed_loads.contains(&hash) {
+             ui.label(format!("Failed to load CSD. Error: {}", self.last_error.as_deref().unwrap_or("Unknown")));
+             // Fallback to hex viewer
+             if let Some(data) = self.raw_data_cache.get(&hash) {
+                  ui.separator();
+                  ui.label("Raw Data Fallback:");
+                  crate::ui::hex_viewer::HexViewer::show(ui, data);
+             }
+        } else {
+             ui.label("Loading CSD...");
+        }
+    }
+
+
+
+
+
+
+
+
 }
+
+
+
+fn is_text_file(path: &str) -> bool {
+    let p = path.to_lowercase();
+    p.ends_with(".txt") || p.ends_with(".xml") || p.ends_with(".ini") || 
+    p.ends_with(".sh") || p.ends_with(".hlsl") || p.ends_with(".vshader") || 
+    p.ends_with(".pshader") || p.ends_with(".fx") || p.ends_with(".mat") || p.ends_with(".csv")
 }
 
+fn decode_text_with_detection(data: &[u8]) -> String {
+    // Check for UTF-16 LE BOM
+    if data.len() >= 2 && data[0] == 0xFF && data[1] == 0xFE {
+        let u16s: Vec<u16> = data[2..]
+            .chunks_exact(2)
+            .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
+            .collect();
+        return String::from_utf16_lossy(&u16s);
+    }
+    // Check for UTF-16 BE BOM
+    if data.len() >= 2 && data[0] == 0xFE && data[1] == 0xFF {
+        let u16s: Vec<u16> = data[2..]
+            .chunks_exact(2)
+            .map(|chunk| u16::from_be_bytes([chunk[0], chunk[1]]))
+            .collect();
+        return String::from_utf16_lossy(&u16s);
+    }
+    
+    // Check for UTF-8 BOM
+    if data.len() >= 3 && data[0] == 0xEF && data[1] == 0xBB && data[2] == 0xBF {
+        return String::from_utf8_lossy(&data[3..]).to_string();
+    }
 
-
-
+    // Default to UTF-8 lossy
+    String::from_utf8_lossy(data).to_string()
+}

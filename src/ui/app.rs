@@ -152,7 +152,6 @@ impl ExplorerApp {
                     let mut found_bundle_index = false;
 
                     // 1. Try to load from cache
-                    // 1. Try to load from cache
                     let cache_path = crate::settings::AppSettings::get_app_data_dir().join("bundles2.cache");
                     let mut loaded_from_cache = false;
 
@@ -538,6 +537,36 @@ impl eframe::App for ExplorerApp {
 
                                                                  }
                                                              }
+                                                             // PSG
+                                                             else if file_info.path.ends_with(".psg") {
+                                                                 use crate::ui::export_window::PsgFormat;
+                                                                 match settings.psg_format {
+                                                                    PsgFormat::Json => {
+                                                                         let mut converted = false;
+                                                                         match crate::dat::psg::parse_psg(file_data) {
+                                                                             Ok(psg_file) => {
+                                                                                 if let Ok(json_val) = serde_json::to_value(&psg_file) {
+                                                                                     let dest = full_path.with_extension("json");
+                                                                                     if let Ok(s) = serde_json::to_string_pretty(&json_val) {
+                                                                                         if std::fs::write(dest, s).is_ok() {
+                                                                                             converted = true;
+                                                                                         }
+                                                                                     }
+                                                                                 }
+                                                                             },
+                                                                             Err(e) => {
+                                                                                 println!("Failed to parse PSG for export: {}", e);
+                                                                             }
+                                                                         }
+                                                                         if !converted {
+                                                                              let _ = std::fs::write(&full_path, file_data);
+                                                                         }
+                                                                    },
+                                                                    PsgFormat::Original => {
+                                                                         let _ = std::fs::write(&full_path, file_data);
+                                                                    }
+                                                                 }
+                                                             }
                                                              else {
                                                                  let _ = std::fs::write(&full_path, file_data);
                                                              }
@@ -556,21 +585,30 @@ impl eframe::App for ExplorerApp {
     }
 }
 
+        if self.tree_view.is_searching() {
+            ctx.request_repaint();
+        }
+
         egui::SidePanel::left("tree_panel")
             .resizable(true)
-            .default_width(320.0)
-            .min_width(200.0)
+            .default_width(480.0)
+            .min_width(360.0)
             .show(ctx, |ui| {
              if self.reader.is_some() {
                  ui.push_id("tree_scroll", |ui| {
                     egui::ScrollArea::both().auto_shrink([false, false]).show(ui, |ui| {
-                 let action = self.tree_view.show(ui, &mut self.selected_file, self.content_view.dat_viewer.schema.as_ref());
+                        #[allow(deprecated)]
+                        { ui.style_mut().wrap = Some(false); }
+                        let action = self.tree_view.show(ui, &mut self.selected_file, self.content_view.dat_viewer.schema.as_ref());
                  match action {
                      crate::ui::tree_view::TreeViewAction::None => {},
                      crate::ui::tree_view::TreeViewAction::Select => {}, // Handled by mut ref
-                      crate::ui::tree_view::TreeViewAction::RequestExport { hashes, name, is_folder } => {
+                      crate::ui::tree_view::TreeViewAction::RequestExport { hashes, name, is_folder, settings } => {
                           self.export_window.open_for(&name, is_folder);
                           self.export_window.hashes = hashes;
+                          if let Some(s) = settings {
+                              self.export_window.settings = s;
+                          }
                       }
                  }
 
@@ -587,10 +625,7 @@ impl eframe::App for ExplorerApp {
              } else {
                  ui.centered_and_justified(|ui| {
                      if self.is_loading {
-                         // Removed redundant spinner as footer has one.
-                         // Just show nothing or a subtle text?
-                         // User said "No need to be showing Loading GGPK... since we also have it in the footer area"
-                         // I'll show nothing to keep it clean, or maybe the logo?
+                         
                      } else {
                          ui.label("Open a Content.ggpk file to begin.");
                      }
@@ -599,15 +634,15 @@ impl eframe::App for ExplorerApp {
         });
 
         // Handle Export Requests from Content View
-        if let Some((hashes, name)) = self.content_view.export_requested.take() {
+        if let Some((hashes, name, settings)) = self.content_view.export_requested.take() {
              // Determine if it's a folder or single file based on count
-             let is_folder = hashes.len() > 1; // Or check if it's actually a directory in tree view, but here we just export what's requested. 
-             // Content view export is usually single file unless we implement multi-select later.
-             // But TreeView export can be folder.
-             // If Content View context menu is used, it's one file.
+             let is_folder = hashes.len() > 1; 
              
              self.export_window.open_for(&name, is_folder);
              self.export_window.hashes = hashes;
+             if let Some(s) = settings {
+                 self.export_window.settings = s;
+             }
         }
 
         // Poll Export Status
@@ -764,6 +799,10 @@ impl eframe::App for ExplorerApp {
                         ui.add_space(8.0);
                         
                         ui.separator();
+                        if self.tree_view.is_searching() {
+                             ui.label("Searching... ⏳");
+                             ui.separator();
+                        }
                         ui.label("Credits & Acknowledgements:");
                         ui.hyperlink_to("ooz (Oodle Decompression)", "https://github.com/zao/ooz");
                         ui.hyperlink_to("dat-schema", "https://github.com/poe-tool-dev/dat-schema");

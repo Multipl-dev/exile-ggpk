@@ -15,8 +15,7 @@ impl GgpkReader {
         let file = File::open(path)?;
         let mmap = unsafe { Mmap::map(&file)? };
 
-        // Read root record (GGPK record at offset 0 usually?)
-        // GGPK record is at 0.
+        // Read root record
         if mmap.len() < 8 {
              return Err(io::Error::new(io::ErrorKind::InvalidData, "File too small"));
         }
