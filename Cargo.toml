@@ -1,44 +1,42 @@
 [package]
-name = "ggpk-explorer"
-version = "1.1.3"
+name = "exile-ggpk"
+version = "0.1.0"
 edition = "2021"
+license = "GPL-3.0"
+description = "Rust library for reading Path of Exile GGPK and Bundle files"
+repository = "https://github.com/Multipl-dev/exile-ggpk"
+keywords = ["poe", "path-of-exile", "ggpk", "game-data"]
+categories = ["game-development", "parsing"]
 
-[package.metadata.deb]
-maintainer = "JuddIsJudd <juddisjudd@example.com>"
-copyright = "2024, JuddIsJudd"
-license-file = ["LICENSE", "4"]
-depends = "$auto"
-assets = [
-    ["target/release/ggpk-explorer", "usr/bin/", "755"],
-    ["assets/icon-256x256.png", "usr/share/icons/hicolor/256x256/apps/ggpk-explorer.png", "644"],
-]
+# Based on ggpk-explorer by JuddIsJudd (GPL-3.0)
+# https://github.com/juddisjudd/ggpk-explorer
+
+[lib]
+name = "exile_ggpk"
+path = "src/lib.rs"
 
 [dependencies]
-eframe = "0.29"
-egui = "0.29"
-egui_extras = { version = "0.29", features = ["all_loaders"] }
-image = { version = "0.25", features = ["dds", "webp", "png"] }
-image_dds = "0.7"
-ddsfile = "0.5"
+# Core parsing
 memmap2 = "0.9"
 byteorder = "1.5"
+
+# Serialization (for index caching)
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 bincode = "1.3"
-rfd = "0.15"
-rodio = "0.19"
-reqwest = { version = "0.12", features = ["blocking", "json", "native-tls"] }
+
+# Error handling
 thiserror = "2.0"
+
+# Logging
 log = "0.4"
-env_logger = "0.11"
+
+# FFI for ooz
 libc = "0.2"
-walkdir = "2"
-chrono = { version = "0.4", features = ["serde"] }
-hound = "3.5.1"
-semver = "1.0"
-open = "5"
 
 [build-dependencies]
 cc = "1.2"
 bindgen = "0.71"
+
+[target.'cfg(windows)'.build-dependencies]
 winres = "0.1"

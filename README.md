@@ -1,68 +1,54 @@
-# GGPK Explorer
+# exile-ggpk
 
-A high-performance GGPK and PoE 2 Bundle explorer written in Rust.
+Rust library for reading Path of Exile GGPK and Bundle game files.
 
-[![GitHub Downloads (all assets, latest release)](https://img.shields.io/github/downloads/juddisjudd/ggpk-explorer/latest/total)](https://github.com/juddisjudd/ggpk-explorer/releases) [![GitHub Release](https://img.shields.io/github/v/release/juddisjudd/ggpk-explorer)](https://github.com/juddisjudd/ggpk-explorer/releases) [![Release](https://github.com/juddisjudd/ggpk-explorer/actions/workflows/release.yml/badge.svg)](https://github.com/juddisjudd/ggpk-explorer/actions/workflows/release.yml)
-
-<img width="1920" height="1048" alt="ggpk-explorer_qIeUwJtYDk" src="https://github.com/user-attachments/assets/8ae3841d-2e35-4465-97d1-d7fbf3349bf0" />
-
+**Forked from [ggpk-explorer](https://github.com/juddisjudd/ggpk-explorer) by JuddIsJudd**
 
 ## Features
 
-### Core Explorer
-- **Hybrid Support**: Seamlessly browse PoE 1 GGPK files and PoE 2 Bundle formats.
-- **CDN Fallback**: Automatically fetches missing bundles from the official CDN when not found locally.
-- **Advanced Search**:
-    - Fast, background-threaded search.
-    - Category filtering (Texture, Audio, Text, Data, etc.).
-    - Smart result expansion with "Load More" for large datasets.
+- **Classic GGPK format** - Legacy format (pre-3.11.2)
+- **Bundle format** - Modern format with Oodle compression (3.11.2+)
+- **DAT file parsing** - Game data tables (.dat/.dat64)
+- **Hash algorithm support** - FNV1a (legacy) and MurmurHash64A (3.21.2+)
 
-### specialized Viewers
-- **DAT Viewer**:
-    - Full schema support for PoE 1 & 2.
-    - Cross-referencing and foreign key resolution.
-    - JSON export.
-- **Code & Text**:
-    - Syntax highlighting for Shaders (`.hlsl`, `.fx`, `.vshader`, `.pshader`).
-    - Auto-detection for standard text formats (`.txt`, `.xml`, `.ini`, `.csv`).
-- **Media**:
-    - **Textures**: DDS support with Zoom/Pan controls.
-    - **Audio**: Built-in OGG player with volume control.
-- **Data Formats**:
-    - **CSD**: Specialized viewer for Client String Data with language filtering and JSON export.
-    - **PSG**: Tree-view visualization for PSG files.
-    - **JSON**: Interactive, collapsible tree viewer.
-    - **Hex Viewer**: Responsive, adaptive layout for raw binary inspection.
+## Usage
 
-### UI & UX
-- **Multilingual Support**: Built-in font fallback for CJK (Chinese, Japanese, Korean) and Thai characters.
-- **Export Tools**: Right-click to export individual files or entire folders to disk.
-- **Theme**: Dark, VSCode-like aesthetic.
+```rust
+use exile_ggpk::GgpkReader;
 
-## Building and Running
+// Read classic GGPK file
+let reader = GgpkReader::open("Content.ggpk")?;
+let file = reader.read_file_by_path("Data/Items.dat")?;
+```
 
-This project uses Oodle for decompression, which requires the `ooz` library.
+## Building
 
-1. Clone the repository with submodules:
-   ```bash
-   git clone --recursive https://github.com/juddisjudd/ggpk-explorer.git
-   ```
-   Or if already cloned:
-   ```bash
-   git submodule update --init --recursive
-   ```
-2. Build and Run:
-   ```bash
-   cargo run --release
-   ```
+Requires:
+- Rust 2021 edition
+- C++17 compiler (for ooz decompression library)
+
+```bash
+git clone --recurse-submodules https://github.com/Multipl-dev/exile-ggpk.git
+cd exile-ggpk
+cargo build
+```
+
+## Native Dependencies
+
+This library includes the [ooz](https://github.com/zao/ooz) decompression library as a git submodule. The ooz library provides Oodle/Kraken decompression required for Bundle format files.
+
+If you didn't clone with `--recurse-submodules`, run:
+```bash
+git submodule update --init --recursive
+```
+
+## License
+
+GPL-3.0 (inherited from ggpk-explorer)
 
 ## Credits
 
-This project utilizes logic and resources from the community:
-
-- **[ooz](https://github.com/zao/ooz)**: For Oodle decompression support.
-- **[dat-schema](https://github.com/poe-tool-dev/dat-schema)**: Source for community-maintained DAT schemas.
-- **[poe-dat-viewer](https://github.com/SnosMe/poe-dat-viewer)**: Inspiration for DAT file structure and viewing logic.
-- **[LibGGPK3](https://github.com/aianlinb/LibGGPK3)**: Reference for GGPK file format handling.
-
-[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/P5P57KRR9)
+- [JuddIsJudd](https://github.com/juddisjudd) - Original ggpk-explorer
+- [zao](https://github.com/zao) - ooz decompression library
+- [dat-schema](https://github.com/poe-tool-dev/dat-schema) - Community-maintained DAT schemas
+- [LibGGPK3](https://github.com/aianlinb/LibGGPK3) - GGPK format reference

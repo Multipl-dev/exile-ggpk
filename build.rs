@@ -13,9 +13,10 @@ fn main() {
         if local.exists() {
             local
         } else if PathBuf::from("../ooz").exists() {
-             PathBuf::from("../ooz")
+            PathBuf::from("../ooz")
         } else {
-             PathBuf::from(r"s:\_projects_\_poe2_\ooz")
+            // ooz submodule should be present - run: git submodule update --init --recursive
+            local
         }
     });
 
@@ -70,11 +71,4 @@ fn main() {
     build.compile("ooz");
 
     println!("cargo:rustc-link-lib=static=ooz");
-
-    #[cfg(windows)]
-    {
-        let mut res = winres::WindowsResource::new();
-        res.set_icon("assets/icon.ico");
-        res.compile().unwrap();
-    }
 }

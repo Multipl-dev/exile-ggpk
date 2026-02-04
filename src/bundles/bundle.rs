@@ -2,6 +2,7 @@ use std::io::{self, Read, Seek, SeekFrom};
 use byteorder::{ByteOrder, LittleEndian};
 use crate::ooz::sys::Ooz_Decompress;
 use std::ptr;
+use log::{debug, warn};
 
 pub struct Bundle {
     pub uncompressed_size: u32,
@@ -25,7 +26,7 @@ impl Bundle {
         let total_payload_size = LittleEndian::read_u32(&header[4..8]);
         let head_payload_size = LittleEndian::read_u32(&header[8..12]);
         let first_file_encode = LittleEndian::read_u32(&header[12..16]);
-        println!("Bundle Header: Compressor Type = {}", first_file_encode);
+        debug!("Bundle Header: Compressor Type = {}", first_file_encode);
         // unk10 at 16..20
         let uncompressed_size2 = LittleEndian::read_u64(&header[20..28]);
         let total_payload_size2 = LittleEndian::read_u64(&header[28..36]);
@@ -87,10 +88,8 @@ impl Bundle {
             };
             
             if ret != dst_len as i32 {
-                println!("Ooz_Decompress FAILED: ret={}, dst_len={}", ret, dst_len);
+                warn!("Ooz_Decompress FAILED: ret={}, dst_len={}", ret, dst_len);
                 return Err(io::Error::new(io::ErrorKind::InvalidData, format!("Ooz_Decompress failed: returned {}, expected {}", ret, dst_len)));
-            } else {
-                // println!("Ooz_Decompress success: {}", ret);
             }
             
             output_offset += dst_len;

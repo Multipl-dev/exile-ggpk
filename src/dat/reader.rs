@@ -1,6 +1,7 @@
 use byteorder::{ByteOrder, LittleEndian};
 use std::io::{self, Cursor, Read, Seek, SeekFrom};
 use super::schema::{Table, Column};
+use log::debug;
 
 pub struct DatReader {
     data: Vec<u8>,
@@ -24,7 +25,7 @@ impl DatReader {
 
 
         let row_count = read_u32(&mut cursor)?;
-        println!("DatReader: Loading {}, Row Count: {}, Is 64bit: {}", filename, row_count, is_64bit);
+        debug!("DatReader: Loading {}, Row Count: {}, Is 64bit: {}", filename, row_count, is_64bit);
         
         let mut row_length = None;
         let mut data_section_offset = 0;
@@ -42,7 +43,7 @@ impl DatReader {
                  if is_64bit {
                       if i + 8 <= data.len() && data[i..i+8] == pattern_64 {
                            let data_size = i - 4;
-                           println!("DatReader: Found 64-bit pattern at {}, data_size={}, row_count={}", i, data_size, row_count);
+                           debug!("DatReader: Found 64-bit pattern at {}, data_size={}, row_count={}", i, data_size, row_count);
                            if data_size % (row_count as usize) == 0 {
                                row_length = Some(data_size / (row_count as usize));
                                data_section_offset = i as u64;
@@ -53,7 +54,7 @@ impl DatReader {
                  } else {
                       if data[i..i+4] == pattern_32 {
                            let data_size = i - 4;
-                           println!("DatReader: Found 32-bit pattern at {}, data_size={}, row_count={}", i, data_size, row_count);
+                           debug!("DatReader: Found 32-bit pattern at {}, data_size={}, row_count={}", i, data_size, row_count);
                            if data_size % (row_count as usize) == 0 {
                                row_length = Some(data_size / (row_count as usize));
                                data_section_offset = i as u64;
@@ -69,7 +70,7 @@ impl DatReader {
              }
 
         } else {
-            println!("DatReader: Row count is 0 for {}", filename);
+            debug!("DatReader: Row count is 0 for {}", filename);
 
             row_length = Some(0);
 

@@ -2,6 +2,7 @@ use std::io::{self, Cursor, Read};
 use byteorder::{ByteOrder, LittleEndian};
 use std::collections::HashMap;
 use serde::{Serialize, Deserialize};
+use log::{debug, info, warn};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BundleInfo {
@@ -59,7 +60,7 @@ impl Index {
         }
         
         let file_count = read_i32(&mut cursor)?;
-        println!("Index::read: Found {} files", file_count);
+        debug!("Index::read: Found {} files", file_count);
         let mut files_map = HashMap::with_capacity(file_count as usize);
         
         for _ in 0..file_count {
@@ -96,15 +97,15 @@ impl Index {
         let hash_algo = if let Some(first_dir) = directories.first() {
              match first_dir.path_hash {
                  0xF42A94E69CFF42FE => {
-                     println!("Index::read: Detected Hash Algorithm: Murmur64A");
+                     debug!("Index::read: Detected Hash Algorithm: Murmur64A");
                      HashAlgorithm::Murmur64A
                  },
                  0x07E47507B4A92E53 => {
-                     println!("Index::read: Detected Hash Algorithm: FNV1a");
+                     debug!("Index::read: Detected Hash Algorithm: FNV1a");
                      HashAlgorithm::Fnv1a
                  },
                  other => {
-                     println!("Index::read: Unknown Hash Algorithm root hash: {:X}. Defaulting to fallback.", other);
+                     debug!("Index::read: Unknown Hash Algorithm root hash: {:X}. Defaulting to fallback.", other);
                      HashAlgorithm::Unknown
                  },
              }
@@ -117,14 +118,14 @@ impl Index {
              if let Ok(dir_data) = bundle.decompress(&mut dir_cursor) {
                  Self::parse_paths(&directories, &dir_data, &mut files_map, hash_algo);
              } else {
-                 println!("Failed to decompress directory bundle");
+                 debug!("Failed to decompress directory bundle");
              }
         } else {
-            println!("Failed to read directory bundle header");
+            debug!("Failed to read directory bundle header");
         }
 
         let populated_count = files_map.values().filter(|f| !f.path.is_empty()).count();
-        println!("Index::read: {}/{} files have paths", populated_count, files_map.len());
+        debug!("Index::read: {}/{} files have paths", populated_count, files_map.len());
         
         Ok(Self { bundles, files: files_map })
     }
