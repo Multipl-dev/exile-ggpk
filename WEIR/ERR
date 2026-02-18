@@ -1,0 +1,5 @@
+# WEIR/ERR | Current Error Log
+# Clear after each incident is resolved (move to POSTMORTEM_NNN.md)
+# Format: timestamp | error | context
+
+# No active errors.

@@ -3,5 +3,6 @@
 /docs
 *.bin
 *.log
+!.asid/**/*.log
 RELEASE_PROCESS.md
 /examples

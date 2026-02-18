@@ -1,0 +1,19 @@
+# Decisions Log | exile-ggpk
+# Purpose: Track architectural and strategic decisions (abbreviated)
+# Full ADRs: .asid/specs/architecture/
+# Format: Append-only, newest at bottom
+
+================================================================================
+2026-02-03 | Session 2
+================================================================================
+
+- Converted ggpk-explorer from binary crate to library crate
+  → Rationale: exile-vision needs a programmatic API, not a CLI tool
+  → Commit: f0f369d (refactor: convert to library crate)
+
+- Retained all four modules (ggpk, bundles, dat, ooz) during refactor
+  → Rationale: all modules are required for full PoE data access
+  → dat/ needed for schema-driven game data queries (future use)
+
+- ooz submodule strategy: keep as git submodule (not vendored)
+  → Rationale: upstream ooz receives PoE-compatibility updates; submodule stays current

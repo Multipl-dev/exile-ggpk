@@ -1,0 +1,26 @@
+# Memory Log | Append-Only Learning Log
+# Purpose: Capture patterns and lessons learned during exile-ggpk development
+# Update: When patterns emerge during development
+# Archive: Distill to ASID/patterns/ when file exceeds 500 lines
+
+================================================================================
+2026-02-03 | Sessions 1-2 - Fork & Library Creation
+================================================================================
+
+**ggpk-explorer Fork Notes:**
+- Original had ~5900 lines total; ~4400 were UI/binary — stripped cleanly
+- Four modules are well-isolated: minimal cross-module coupling, safe to develop independently
+- ooz submodule (C++ Oodle decompression) is mandatory for modern PoE bundle reading
+- GPL-3.0 applies to the fork — all consumers (exile-vision) must also be GPL-3.0
+
+**Build Notes:**
+- ooz requires C++17 compiler and cc crate for FFI compilation
+- `git submodule update --init` required on fresh clone
+- Windows: winres dependency for Windows resource file embedding
+- bindgen generates Rust FFI bindings from ooz C headers at build time
+
+**Format Notes:**
+- Classic GGPK: pre-3.11.2 PoE — direct file tree in .ggpk
+- Bundle format: 3.11.2+ — files packed into compressed bundles
+- Hash algorithm changed in 3.21.2: FNV1a (legacy) → MurmurHash64A (modern)
+- Both hash algorithms must be supported for full file resolution
